@@ -2,7 +2,13 @@
 .Rhistory
 .RData
 .Ruserdata
-/outputs/*
+
+/outputs/
+
 /data/*
+!/data/**/
+/data/ITS2_Unite_9_old_table/*
+/data/metabarcoding_vs_metagenomics/*
 !/data/metabarcoding_vs_metagenomics/put_metaB_and metaG_data_here.txt
+
 /Literature/*
