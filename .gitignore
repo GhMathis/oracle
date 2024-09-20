@@ -1,0 +1,8 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+outputs/*
+data/*
+!data/metabarcoding_vs_metagenomics/put_metaB_and metaG_data_here
+Literature/*

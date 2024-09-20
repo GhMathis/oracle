@@ -1,0 +1,390 @@
+---
+title: "01_metho_comparision_taxo"
+author: "Mathis Gheno"
+date: "2024-09-20"
+output: pdf_document
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+***
+
+## load required packages
+
+```{r packages, message=FALSE}
+library(tidyverse)
+library(ade4) # Coinertia
+library(vegan) # Rarefaction
+library(ggrepel)
+library(metacoder)
+
+main_theme = theme_minimal()+
+  theme(line = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        panel.border = element_blank(),
+        axis.ticks =  element_line(colour = "black"),
+        axis.text.x = element_text(colour = "black", size=22, face="italic", angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(colour = "black", size=22, face="italic"),
+        legend.title = element_text(colour = "black", size=20,
+                                    hjust =0.5),
+        
+        legend.text = element_text(colour = "black", size=18),
+        axis.title= element_text(size=28),
+        strip.text = element_text(colour = "black", size=15, face ="italic"))
+```
+
+## Data path
+```{r}
+metab1 = "data/metabarcoding_vs_metagenomics/oracle_metaBt0_16S_samples_run_20190715_kraken2_assignment_genuses.tsv"
+#metab2 = "data/metabarcoding_vs_metagenomics/oracle_metaBt0_16S_samples_run_20200106_kraken2_assignment_genuses.tsv"
+metag1 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_12_samples_kraken2_SSU_assignment_genuses.tsv"
+#metag2 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_21_1_samples_kraken2_SSU_assignment_genuses.tsv"
+#metag3 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_21_2_samples_kraken2_SSU_assignment_genuses.tsv"
+```
+
+# Load data
+
+## Set up function to load and pepare data 
+```{r}
+taxonomic_levels <- c("kingdom", "phylum", "class", "order", "family", 
+                      "genus", "species")
+## ---- Arrange metaB ----
+
+# Select dat from bracken method, and rename columns 
+select_and_rename_cols = function(tab, method){
+  tab%>%
+    read_tsv(col_names = T, skip = 1)%>%
+    select(which(str_detect(colnames(.),"bracken_genuses")), "#OTU ID", "taxonomy")%>%
+    rename_with( # rename colnames
+      .%>%
+      str_remove( "_bracken_genuses")%>% 
+      str_replace_all("^OR-", "BU_") %>% 
+      str_replace_all("-", "_")%>% 
+      str_remove("_S\\d+")%>%
+      str_replace("((?<!.)T_)(\\d)", "CONT_BU_PCR_\\2")%>%
+      str_replace("(BU_T_extr)", "CONT_BU_ext")%>%
+      str_replace("#OTU ID", "OTU")
+      )%>%rename_with(~ paste0(., "_",method), contains("BU"))%>%
+    separate_wider_delim(taxonomy, names = taxonomic_levels, delim = "; ", cols_remove = F)%>% # Separate taxonomy colums in 6 colums of taxonomic levels
+    filter(kingdom == "k__Bacteria")
+  }
+```
+
+## Decontamination function
+
+Compute the total number of reads for each OTU present in control
+samples. That sum is then substracted from all occurrences of that OTU
+in true samples. The rationale is as follows:
+
+- if an OTU is abundant in control samples, but rare in true samples,
+  then it is a contamination specific to the control samples, and it
+  will be eliminated by the substraction (i.e, final abundance is 0),
+- if an OTU is present in control samples, and present in true samples
+  (systematic contamination, will be mitigated by the substraction),
+ - if an OTU is rare in control samples, but abundant in true samples
+  (cross-talk, will be eliminated/mitigated by the substraction)
+
+Control samples can be eliminated from the statistical analysis after
+the substraction (all OTUs present in control samples have been zeroed
+out).
+```{r}
+.%>%
+  #select(!ends_with(run_rm))%>%
+  replace(. == 0, NA) %>%
+  pivot_longer(starts_with("BU"), names_to = "samples", values_to = "reads") %>%
+  filter(!is.na(reads)) %>%
+  #{{merge control samples}}
+  mutate( n = rowSums(across(starts_with("CONT")), na.rm = T))%>%
+  #{{substract abundance of control samples}}
+  mutate(reads = case_when(
+    is.na(n)  ~ reads,
+    n > reads ~ 0,
+    TRUE      ~ reads - n)) %>%
+  select(-n,-starts_with("CONT"))%>%
+  pivot_wider(values_from = reads, names_from = samples, values_fill = 0) -> decontaminate
+
+
+```
+
+
+
+## Load and format data for coinertia
+
+```{r}
+metab1%>%
+ select_and_rename_cols("B")%>%
+ decontaminate -> metab1_decont_table
+
+metag1%>%
+ select_and_rename_cols("G")%>%
+ decontaminate -> metag1_decont_table
+metag1_decont_table%>%
+  full_join( metab1_decont_table, by = join_by(OTU == OTU, kingdom==kingdom, phylum == phylum,
+                                               class == class, order == order, family == family,
+                                               genus == genus,  species == species, taxonomy == taxonomy))%>%
+   mutate(across(where(is.numeric), ~ replace(., is.na(.), 0)))-> meta_g_b_decond_table
+```
+
+```{r}
+metab1_decont_table%>%
+  select(starts_with("BU"))%>%rowSums
+```
+Is it normal that some OTU have 0 reads ?
+
+
+### Rarefaction function 
+```{r}
+rarefaction.func = function(df,rar_sample, rarcur = T){
+  
+  
+  if(rarcur){ # {{ if rarefaction curve needed}}
+    metab1_decont_table%>%
+  select(starts_with("BU"))%>%
+  t()%>%rarecurve(step = 20, sample = rar_sample, col = "blue", cex = 0.6)
+  }
+   # {{rarefaction}}
+  df%>%
+    select(starts_with("BU"))%>%
+    t()%>%
+    rrarefy(rar_sample)%>%
+    t()%>%
+    bind_cols(
+      df%>%select(!starts_with("BU"))
+    )-> df_rarefy
+  return(df_rarefy)
+}
+
+```
+
+
+### Which value to rarefy ?
+```{r}
+meta_g_b_decond_table%>%
+  select(starts_with("BU"))%>%
+  t()%>%rowSums%>%sort%>%log10%>%plot(1:length(.),.)
+```
+Gap around 10^3.8 => rarefy at this value
+
+### Rarefaction
+```{r}
+meta_g_b_decond_table%>%rarefaction.func(rar_sample =round(10^3.8), rarcur = T) -> meta_g_b_decond_table_rare
+```
+
+##Coinertia
+
+### Fist PCA for each method
+```{r}
+meta_g_b_decond_table_rare%>%
+  column_to_rownames("OTU")%>%
+  select(ends_with("R1_B"))%>%
+  select(order(colnames(.)))%>%
+  decostand(method = "hellinger")%>%
+  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> dudi_b_r1
+
+meta_g_b_decond_table_rare%>%
+  column_to_rownames("OTU")%>%
+  select(ends_with("R2_B"))%>%
+  select(order(colnames(.)))%>%
+  decostand(method = "hellinger")%>%
+  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> dudi_b_r2
+
+meta_g_b_decond_table_rare%>%
+  column_to_rownames("OTU")%>%
+  select(ends_with("R1_G"))%>%
+  select(order(colnames(.)))%>%
+  decostand(method = "hellinger")%>%
+  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> dudi_g_r1
+
+meta_g_b_decond_table_rare%>%
+  column_to_rownames("OTU")%>%
+  select(ends_with("R2_G"))%>%
+  select(order(colnames(.)))%>%
+  decostand(method = "hellinger")%>%
+  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> dudi_g_r2
+# Disjoint R1 and R2 and decontaminate
+```
+
+I'm doing the Hellinger transformation on the matrix (OTU x site). Usually the transformation (and the coinertia by extension) is done on the transpose of this matrix (site x species/OUT).It is because most of the time we are interested in the difference of species composition in sites. However here we are interested in the species detection difference, in other word we are looking for difference of species abundances in sites
+
+/!\ Maybe do separate or merge Hellinger transformation on the 2 df ?
+
+### Better graphical representation function
+```{r}
+### ---- better graph representation for coinertia
+coin.graph = function(coin_obj,meta_obj, brin, method){
+  # {{recover coordinate in the ordination space of the 2 method to compaire}}
+  cbind(coin_obj$mX,coin_obj$mY) ->  df_coin_pos
+  colnames(df_coin_pos)=c("metho1_x", "metho1_y", "metho2_x", "metho2_y")
+  
+  df_coin_pos%>%
+    rownames_to_column("OTU")%>%
+    mutate(OTU = as.numeric(OTU))%>%
+     # {{recover OTU and genus information}}
+    left_join(meta_obj%>%select(OTU, genus), by = "OTU")%>%
+    # {{Find taxa with the higher and lower diff (lower and higer distance in the ordination space between metho1(x,y) and metho2(x,y) )}}
+    mutate(dist =  sqrt(rowSums((coin1$mX-coin1$mY)^2)))%>%
+    arrange(desc(dist)) %>%
+    slice(c(1:10, (n() - 9):n()))%>%
+    # {{add a colums to facet_wrap}}
+    mutate(diff = c(rep("Strong",10 ), rep("Weak", 10)))%>%
+
+    ggplot()+
+    facet_wrap(~diff)+
+    geom_label_repel(aes(x= metho1_x, y = metho1_y ,label = genus))+
+    geom_segment(aes(x = metho1_x, y = metho1_y, xend = metho2_x, yend = metho2_y),
+                 arrow = arrow(length = unit(0.3, "cm"), type = "closed"), cex =1)+
+    
+    labs(x="X",y = "Y", title = paste("Genera estimations differences between", brin[1],method[1], "(arrow tail) and", brin[2],method[2], "(arrow head) across 80 samples"))+
+    main_theme
+    }
+```
+
+### Metabarcoding R1 vs R2
+```{r}
+coin1 <- coinertia(dudi_b_r1,dudi_b_r2, scan = FALSE, nf = 2)
+
+summary(coin1)
+plot(coin1)
+coin.graph(coin1,meta_obj= meta_g_b_decond_table_rare, brin = c("R1","R2"), method = c("metaB", "metaB"))
+```
+
+### Metagenomic R1 vs R2
+```{r}
+coin2 <- coinertia(dudi_g_r1,dudi_g_r2, scan = FALSE, nf = 2)
+
+summary(coin2)
+plot(coin2)
+coin.graph(coin2,meta_obj= meta_g_b_decond_table_rare, brin = c("R1","R2"), method = c("metaG", "metaG"))
+```
+
+### Metabarcoding R1 vs Metagenomic R1
+```{r}
+coin3 <- coinertia(dudi_b_r1,dudi_g_r1, scan = FALSE, nf = 2)
+
+summary(coin3)
+plot(coin3)
+coin.graph(coin3,meta_obj= meta_g_b_decond_table_rare, brin = c("R1","R1"), method = c("metaB", "metaG"))
+```
+
+### Metabarcoding R2 vs Metagenomic R2
+```{r}
+coin4 <- coinertia(dudi_b_r2,dudi_g_r2, scan = FALSE, nf = 2)
+
+summary(coin4)
+plot(coin4)
+coin.graph(coin4,meta_obj= meta_g_b_decond_table_rare, brin = c("R2","R2"), method = c("metaB", "metaG"))
+```
+
+## Metacoder
+
+### Function that make the metacoder object that contain the taxonomic comparison tree
+
+```{r}
+make.tax.tree.comp = function(df,method){
+  df %>%
+  select(OTU, kingdom, phylum, class, order, family, genus, species, taxonomy, ends_with(method[1]), ends_with(method[2]))%>%
+  # {{standardization of the table produce by the "method 1" (first method put in the vector)}}
+  mutate(across(ends_with(method[1]), ~ sqrt(. / rowSums(across(ends_with(method[1])))), .names = "hellinger_{col}"), 
+  # {{standardization of the table produce by the "method 2" (second method put in the vector)}}       
+  across(ends_with(method[2]), ~ sqrt(. / rowSums(across(ends_with(method[2])))), .names = "hellinger_{col}"),.keep = "unused")%>%
+  # {{remove species that don't appear in the 2 method that we compare in this chunk}}
+  mutate(total = rowSums(across(starts_with("hellinger_") )))%>%
+  filter(total !=0 )%>%
+  # {{create metacoder object}}
+  metacoder::parse_tax_data(class_cols = "taxonomy", # The column in the input table
+                      class_sep = "; ",
+                      class_regex = "^([a-z]{0,1})_{0,2}(.*)$",
+                      class_key = c("tax_rank" = "taxon_rank", "name" = "taxon_name")) -> obj
+  
+  # {{compute abudance (standadize by hellinger) per taxon for the 2 methode}}
+  obj$data$tax_abund <- metacoder::calc_taxon_abund(obj, "tax_data",
+                                       cols = startsWith(colnames(obj$data$tax_data),"hellinger"),
+                                                         groups = str_extract(str_subset(colnames(obj$data$tax_data), "_R\\d_[BG]"),"R\\d_[BG]"))
+  return(obj)
+}
+meta_g_b_decond_table_rare%>%
+  make.tax.tree.comp(method = c("R1_B","R2_B")) -> obj1
+```
+
+### Metabarcoding R1 vs R2 
+
+```{r}
+obj1%>%
+  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
+            node_size = R1_B+R2_B,
+            node_color = R1_B-R2_B,
+            node_color_range = c("blue", "gray", "red"),
+            node_color_interval = c(-max(abs(R1_B-R2_B)), max(abs(R1_B-R2_B))),
+            node_color_axis_label = "Standardized abudance \n difference across site (R1_B-R2_B)",
+            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
+            layout = "davidson-harel", initial_layout = "reingold-tilford")
+
+```
+
+Here we see that in the phylum *Protobacteia* the class *Gammaprotobacteria* is mostly detected by R1 and  *Alphaprotobacteria* is mostly detected by R1.
+*Fimicutes* and *Actinobacteria* are better detected by R1
+
+### Metagenomic R1 vs R2 
+
+```{r}
+meta_g_b_decond_table_rare%>%
+  make.tax.tree.comp(method = c("R1_G","R2_G")) -> obj2
+obj2%>%
+  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
+            node_size = R1_G+R2_G,
+            node_color = R1_G-R2_G,
+            node_color_range = c("blue", "gray", "red"),
+            node_color_interval = c(-max(abs(R1_G-R2_G)), max(abs(R1_G-R2_G))),
+            node_color_axis_label = "Standardized abudance \n difference across site (R1_G-R2_G)",
+            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
+            layout = "davidson-harel", initial_layout = "reingold-tilford")
+
+```
+
+Different pattern for metaG than metaB here in phylum *Protobacteia* the class *Gammaprotobacteria* and *Alphaprotobacteria* are both more detected by R1.
+*Fimicutes* and *Actinobacteria* are also better detected by R1
+
+### Metabarcoding R1 vs Metagenomic R1
+
+```{r}
+meta_g_b_decond_table_rare%>%
+  make.tax.tree.comp(method = c("R1_B","R1_G")) -> obj3
+
+obj3%>%
+  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
+            node_size = R1_B+R1_G,
+            node_color = R1_B-R1_G,
+            node_color_range = c("blue", "gray", "red"),
+            node_color_interval = c(-max(abs(R1_B - R1_G)), max(abs(R1_B - R1_G))),
+            node_color_axis_label = "Standardized abudance \n difference across site (R1_B-R1_G)",
+            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
+            layout = "davidson-harel", initial_layout = "reingold-tilford")
+
+```
+
+
+### Metabarcoding R2 vs Metagenomic R2
+
+```{r}
+meta_g_b_decond_table_rare%>%
+  make.tax.tree.comp(method = c("R2_B","R2_G")) -> obj4
+
+obj4%>%
+  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
+            node_size = R2_B+R2_G,
+            node_color = R2_B-R2_G,
+            node_color_range = c("blue", "gray", "red"),
+            node_color_interval = c(-max(abs(R2_B-R2_G)), max(abs(R2_B-R2_G))),
+            node_color_axis_label = "Standardized abudance \n difference across site (R2_B-R2_G)",
+            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
+            layout = "davidson-harel", initial_layout = "reingold-tilford")
+
+```
