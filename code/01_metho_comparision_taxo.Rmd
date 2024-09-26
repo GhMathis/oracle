@@ -42,10 +42,10 @@ main_theme = theme_minimal()+
 ## Data path
 ```{r}
 metab1 = "data/metabarcoding_vs_metagenomics/oracle_metaBt0_16S_samples_run_20190715_kraken2_assignment_genuses.tsv"
-#metab2 = "data/metabarcoding_vs_metagenomics/oracle_metaBt0_16S_samples_run_20200106_kraken2_assignment_genuses.tsv"
+metab2 = "data/metabarcoding_vs_metagenomics/oracle_metaBt0_16S_samples_run_20200106_kraken2_assignment_genuses.tsv"
 metag1 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_12_samples_kraken2_SSU_assignment_genuses.tsv"
-#metag2 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_21_1_samples_kraken2_SSU_assignment_genuses.tsv"
-#metag3 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_21_2_samples_kraken2_SSU_assignment_genuses.tsv"
+metag2 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_21_1_samples_kraken2_SSU_assignment_genuses.tsv"
+metag3 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_21_2_samples_kraken2_SSU_assignment_genuses.tsv"
 ```
 
 # Load data
@@ -57,25 +57,29 @@ taxonomic_levels <- c("kingdom", "phylum", "class", "order", "family",
 ## ---- Arrange metaB ----
 
 # Select data from bracken method, and rename columns 
-select_and_rename_cols = function(tab, method = "G"){
-  metag1%>%
-    read_tsv(col_names = T, skip = 1)%>%
-    select(which(str_detect(colnames(.),"bracken_genuses")), "#OTU ID", "taxonomy")%>%
+select.and.rename.cols = function(tab, method = "G"){
+  tab %>%
+    read_tsv(col_names = T, skip = 1) %>%
+    select(contains("bracken_genuses"), `#OTU ID`, taxonomy) %>%
     rename_with( # rename colnames
-      .%>%
-      str_remove( "_bracken_genuses")%>% 
+      . %>%
+      str_remove( "_bracken_genuses") %>% 
       str_replace_all("^OR-", "BU_") %>% 
-      str_replace_all("-", "_")%>%
-      str_remove("_S\\d+")%>%
-      str_replace("((?<!.)T_)(\\d)", "CONT_BU_PCR_\\2")%>%
-      str_replace("(BU_T_extr)", "CONT_BU_ext")%>%
-      str_replace("#OTU ID", "OTU")%>%
-      str_replace("(BU_[A-Z]+_)(\\d{1})(_R\\d+)", "\\10\\2\\3"
-                  ))%>% # add 0 before 1-Digit Numbers of soil code
-    rename_with(~ paste0(., "_", method), contains("BU"))%>% # add B or G at the end of soil code depending on the method 
+      str_replace_all("-", "_") %>%
+      str_remove("_S\\d+") %>%
+      #  (^T_) Select strings with the letter T at the begening of the string; (\\d) detect number ; 
+      #  "CONT_BU_PCR_\\2" replace name to matching string and add group 2 (which corespond to  (\\d) )
+      str_replace("(^T_)(\\d)", "CONT_BU_PCR_\\2") %>% 
+      str_replace("(BU_T_extr)", "CONT_BU_ext") %>%
+      str_replace("(^T_Ex)", "CONT_BU_ext") %>%
+      str_replace("#OTU ID", "OTU") %>%
+      # add a 0 in matich sting ex : BU_SER_1_R1 -> BU_SER_01_R1
+      str_replace("(BU_[A-Z]+_)(\\d{1})(_R\\d+)", "\\10\\2\\3")
+      ) %>% # add 0 before 1-Digit Numbers of soil code
+    rename_with(~ paste0(., "_", method), contains("BU")) %>% # add B or G at the end of soil code depending on the method 
       
-    separate_wider_delim(taxonomy, names = taxonomic_levels, delim = "; ", cols_remove = F)%>% # Separate taxonomy colums in 6 colums of taxonomic levels
-    filter(kingdom == "k__Bacteria")
+    separate_wider_delim(taxonomy, names = taxonomic_levels, delim = "; ", cols_remove = F) # Separate taxonomy colums in 6 colums of taxonomic levels
+    # filter(kingdom == "k__Bacteria")
 }
 
 ```
@@ -98,7 +102,7 @@ Control samples can be eliminated from the statistical analysis after
 the substraction (all OTUs present in control samples have been zeroed
 out).
 ```{r}
-.%>%
+. %>%
   #select(!ends_with(run_rm))%>%
   replace(. == 0, NA) %>%
   pivot_longer(starts_with("BU"), names_to = "samples", values_to = "reads") %>%
@@ -121,25 +125,44 @@ out).
 ## Load and format data for coinertia
 
 ```{r}
-metab1%>%
- select_and_rename_cols("B")%>%
+metab1 %>%
+ select.and.rename.cols("B") %>%
  decontaminate -> metab1_decont_table
 
-
-metag1%>%
- select_and_rename_cols("G")%>%
- decontaminate -> metag1_decont_table
-metag1_decont_table%>%
-  full_join( metab1_decont_table, by = join_by(OTU == OTU, kingdom==kingdom, phylum == phylum,
+metab2 %>%
+ select.and.rename.cols("B") %>%
+ decontaminate -> metab2_decont_table
+metab2_decont_table%>% colnames
+# Merge run 1 and 2 of metaB, because some sample failed in the first run
+metab1_decont_table%>%
+  full_join(metab2_decont_table, by = join_by(OTU == OTU, kingdom == kingdom, phylum == phylum,
                                                class == class, order == order, family == family,
-                                               genus == genus,  species == species, taxonomy == taxonomy))%>%
-   mutate(across(where(is.numeric), ~ replace(., is.na(.), 0))) -> meta_g_b_decond_table
+                                               genus == genus,  species == species, taxonomy == taxonomy)) %>%
+  select(-ends_with(".x")) %>% # Remove conflicting columns from the left-hand side
+  rename_with(~ sub(".y", "", .), ends_with(".y")) %>%  # Rename right-hand columns
+  mutate(across(where(is.numeric), ~ replace(., is.na(.), 0))) -> metab_decont_table
+
+          
+metag1 %>%
+ select.and.rename.cols("G") %>%
+ decontaminate-> metag1_decont_table
+
+metag3 %>%
+ select.and.rename.cols("B") %>%
+ decontaminate%>% colnames
+
+metag1_decont_table %>%
+  full_join(metab_decont_table, by = join_by(OTU == OTU, kingdom == kingdom, phylum == phylum,
+                                               class == class, order == order, family == family,
+                                               genus == genus,  species == species, taxonomy == taxonomy)) %>%
+   mutate(across(where(is.numeric), ~ replace(., is.na(.), 0)))%>%
+   select(-c(BU_TS_15_R1_B, BU_TS_15_R2_B)) -> meta_g_b_decond_table # remove sample because missing for metaG
 
 ```
 
 ```{r}
-metab1_decont_table%>%
-  select(starts_with("BU"))%>%rowSums
+metab1_decont_table %>%
+  select(starts_with("BU")) %>% rowSums
 ```
 Is it normal that some OTU have 0 reads ?
 
@@ -168,59 +191,76 @@ rarefaction.func = function(df,rar_sample, rarcur = T){
 
 ```
 
+### Variance per OTU per method across samples
 
+```{r}
+ge %>% as.data.frame()%>%
+  filter(rowSums(across(starts_with("BU")), na.rm = T) != 0 )%>%
+  rownames_to_column("OTU")%>%
+  pivot_longer(starts_with("BU"), names_to = "sample_ID", values_to = "reads") %>%
+  mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]")) %>%
+  group_by(OTU, method) %>%
+  summarise(reads_var = log10(var(reads, na.rm = T)+1)) %>%
+  ungroup() %>%
+  ggplot()+
+  facet_wrap(~method)+
+  geom_histogram(aes(x = reads_var))
+```
+
+Meta genomic miss more OTU that meta barcoding. Exept for 0, variance distribution of OTU number of reads look like similar for both method. It suggest that both method give an over all similar distribution of OTUs between samples, but without OTUs ID I cannot be sure for individual OTUs or groups of OTUs (taxa).
+
+### Variance per OTU
+```{r}
+meta_g_b_decond_table %>%
+  filter(rowSums(across(starts_with("BU")), na.rm = T) !=0 )%>%
+  pivot_longer(starts_with("BU"), names_to = "sample_ID", values_to = "reads") %>%
+  mutate(soil_code = str_extract(sample_ID, "(BU_[A-Z]+_)(\\d+)")) %>%
+  group_by(OTU,soil_code) %>%
+  summarise(reads_var = log10(var(reads, na.rm = T))) %>%
+  ungroup() %>%
+  ggplot()+
+  geom_histogram(aes(x = reads_var))
+```
+Not much 
 ### Which value to rarefy ?
 ```{r}
-meta_g_b_decond_table%>%
-  select(starts_with("BU"))%>%
-  t()%>%rowSums%>%sort%>%log10%>%plot(1:length(.),.)
+meta_g_b_decond_table %>%
+  pivot_longer(starts_with("BU"), names_to = "sample_ID", values_to = "reads") %>%
+  group_by(sample_ID) %>%
+  summarise(reads_sum = sum(reads)) %>% 
+  arrange(reads_sum) ->size_eff
+
+size_eff$reads_sum[1] -> min_ech
+
+size_eff %>%
+  mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]")) %>%
+  ggplot()+
+  geom_point(aes(x = reorder(sample_ID, reads_sum), y = reads_sum, col = method))+
+  scale_y_log10()
 ```
-Gap around 10^3.8 => rarefy at this value
+
 
 ### Rarefaction
 ```{r}
-meta_g_b_decond_table%>%rarefaction.func(rar_sample =round(10^3.8), rarcur = T) -> meta_g_b_decond_table_rare
-meta_g_b_decond_table_rare$BU_TS_15
-meta_g_b_decond_table$BU_TS_15
+meta_g_b_decond_table%>%rarefaction.func(rar_sample = min_ech, rarcur = T) -> meta_g_b_decond_table_rare
+
 ```
 
-##Coinertia
+## Co-inertia
 
 ### Fist PCA for each method
 ```{r}
-meta_g_b_decond_table_rare%>%
+pca.for.method <- function(tab, method){
+  tab %>%
   column_to_rownames("OTU")%>%
-  select(ends_with("R1_B"))%>%
+  select(ends_with(method))%>%
   select(order(colnames(.)))%>%
   decostand(method = "hellinger")%>%
-  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> dudi_b_r1
+  ade4::dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> pca_obj
 
-meta_g_b_decond_table_rare%>%
-  column_to_rownames("OTU")%>%
-  select(ends_with("R2_B"))%>%
-  select(order(colnames(.)))%>%
-  decostand(method = "hellinger")%>%
-  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> dudi_b_r2
-
-meta_g_b_decond_table_rare%>%
-  column_to_rownames("OTU")%>%
-  select(ends_with("R1_G"))%>%
-  select(order(colnames(.)))%>%
-  decostand(method = "hellinger")%>%
-  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> dudi_g_r1
-
-meta_g_b_decond_table_rare%>%
-  column_to_rownames("OTU")%>%
-  select(ends_with("R2_G"))%>%
-  select(order(colnames(.)))%>%
-  decostand(method = "hellinger")%>%
-  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> dudi_g_r2
-# Disjoint R1 and R2 and decontaminate
+  return(pca_obj)
+}
 ```
-
-I'm doing the Hellinger transformation on the matrix (OTU x site). Usually the transformation (and the coinertia by extension) is done on the transpose of this matrix (site x species/OUT).It is because most of the time we are interested in the difference of species composition in sites. However here we are interested in the species detection difference, in other word we are looking for difference of species abundances in sites
-
-/!\ Maybe do separate or merge Hellinger transformation on the 2 df ?
 
 ### Better graphical representation function
 ```{r}
@@ -228,20 +268,21 @@ I'm doing the Hellinger transformation on the matrix (OTU x site). Usually the t
 coin.graph = function(coin_obj,meta_obj, brin, method){
   # {{recover coordinate in the ordination space of the 2 method to compaire}}
   cbind(coin_obj$mX,coin_obj$mY) ->  df_coin_pos
-  colnames(df_coin_pos)=c("metho1_x", "metho1_y", "metho2_x", "metho2_y")
+  colnames(df_coin_pos) = c("metho1_x", "metho1_y", "metho2_x", "metho2_y")
+  
   
   df_coin_pos%>%
     rownames_to_column("OTU")%>%
     mutate(OTU = as.numeric(OTU))%>%
      # {{recover OTU and genus information}}
-    left_join(meta_obj%>%select(OTU, genus), by = "OTU")%>%
+    left_join(meta_obj%>%
+                select(OTU, genus), by = "OTU")%>%
     # {{Find taxa with the higher and lower diff (lower and higer distance in the ordination space between metho1(x,y) and metho2(x,y) )}}
-    mutate(dist =  sqrt(rowSums((coin1$mX-coin1$mY)^2)))%>%
+    mutate(dist =  sqrt(rowSums((coin_obj$mX-coin_obj$mY)^2)))%>%
     arrange(desc(dist)) %>%
     slice(c(1:10, (n() - 9):n()))%>%
     # {{add a colums to facet_wrap}}
     mutate(diff = c(rep("Strong",10 ), rep("Weak", 10)))%>%
-
     ggplot()+
     facet_wrap(~diff)+
     geom_label_repel(aes(x= metho1_x, y = metho1_y ,label = genus))+
@@ -253,40 +294,278 @@ coin.graph = function(coin_obj,meta_obj, brin, method){
     }
 ```
 
-### Metabarcoding R1 vs R2
+### Idea of coinertia
+
+Usually coinertion is done with matrix (OTU(row) x sample(col)) because we are looking for community difference across site. Here I am interested by site difference across across sample, in orther words we want to know if distribution per species/taxa  is similare across samples. To do so I use the matrix : samples(row) x OTU(col) (transpose of the previous one)
+
+Let's take a look at the difference with a small example:
+
+I create 2 simplified data frame (obtaine with method A and B) with the 3 same species and 3 same samples. 
 ```{r}
-coin1 <- coinertia(dudi_b_r1,dudi_b_r2, scan = FALSE, nf = 2)
+A <- data.frame(sample1A = c(0.4,0,0.6), sample2A = c(0,1,0), sample3A = c(0.33,0.33,0.33), sp = c("sp1", "sp2" ,"sp3")) %>%
+  column_to_rownames("sp") %>%
+  t()
+B <- data.frame(sample1B = c(0,0.4,0.6), sample2B = c(1,0,0), sample3B = c(0.33,0.33,0.33), sp = c("sp1", "sp2" ,"sp3")) %>%
+  column_to_rownames("sp") %>%
+  t()
+A %>%
+  knitr::kable()
+B%>%
+  knitr::kable()
+
+```
+
+```{r}
+# test metric
+  
+# A%>%t() != 0 ->  A_T
+# B%>%t() != 0 ->  B_T
+# 
+# a = rowSums(A_T & B_T)
+# b = rowSums(xor(A_T, B_T) & A_T)
+# c = rowSums(xor(A_T, B_T) & B_T)
+# d = rowSums(!(A_T | B_T))
+# n = a + b + c + d
+# E = (a + b)*(a + c)/n # (expected occurrences in A)*(expected occurrences in B)/(total occurances) = expected co-occurrences
+# E>= a
+# 
+# 1-pchisq((n*abs(a*d-b*c) - n/2)^2/((a + b)*(c + d)*(a + c)*(b + d)), 1)
+# (n*abs(a*d-b*c) - n/2)^2/((a + b)*(c + d)*(a + c)*(b + d))
+# 
+# (2*rowSums(A_T|B_T))/(2*rowSums(A_T & B_T) + 2*rowSums(A_T | B_T) )
+# sqrt(rowSums((A%>%t() - B%>%t())^2))
+# 
+
+# meta_g_b_decond_table%>%
+#   select(ends_with("R1_G")) -> meta_g_R1
+# meta_g_b_decond_table%>%
+#   select(ends_with("R1_B")) -> meta_b_R1
+# meta_g_R1-meta_b_R1
+# meta_b_R1 != 0 -> meta_g_R1_bin
+# meta_b_R1 != 0 -> meta_b_R1_bin
+# 
+# a = rowSums(meta_b_R1_bin & meta_g_R1_bin)
+# b = rowSums(xor(meta_b_R1_bin,meta_g_R1_bin)&meta_b_R1_bin)
+# c = rowSums(xor(meta_b_R1_bin,meta_g_R1_bin)&meta_g_R1_bin)
+# d = rowSums(!(meta_b_R1_bin| meta_g_R1_bin))
+# n = a + b + c + d
+# E = (a + b)*(a + c)/n # (expected occurrences in A)*(expected occurrences in B)/(total occurances) = expected co-occurrences
+# E>= a
+# par(mfrow = c(1,1))
+# X2_value = n*(abs(a*d-b*c) - n/2)^2/((a + b)*(c + d)*(a + c)*(b + d))
+# p_value <- 1 - pchisq(X2_value, 1)
+# plot(sqrt(rowSums(((meta_b_R1/rowSums(meta_b_R1) - meta_g_R1/rowSums(meta_g_R1)))^2)),p_value )
+
+```
+
+sp1 and sp2 have a different distribution across sample between A and B. sp3 have identical distribution between A and B
+
+If we look at first approach (community difference across site)
+
+```{r}
+library(factoextra)
+library(FactoMineR)
+A %>%
+  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> pca_A
+factoextra::fviz_pca_biplot(pca_A, repel = TRUE, col.var = "#2E9FDF", col.ind = "#696969")
+
+B  %>%
+  dudi.pca( scale = TRUE, scan = FALSE, nf = 3) -> pca_B
+factoextra::fviz_pca_biplot(pca_B, repel = TRUE, col.var = "#2E9FDF", col.ind = "#696969")
+```
+PCA show us which sample is associated to which species. Here species are considered as variables defining samples
+
+Co-inertia will show us the difference between sample.
+Here we could suppose that we will detect differences between sample 1; 2 A and 1; 2 B  and no differences between 3 A and 3 B...
+```{r}
+coin_test <- ade4::coinertia(pca_A,pca_B, scan = FALSE, nf = 2)
+pca_A$co
+pca_B$co
+summary(coin_test)
+plot(coin_test)
+```
+
+But surprisingly there is no sample differences detected between methods. (sampleN A and B overlap on the plot)
+The reason is that co-inertia project correlated variables in same "area" on the ordination space.
+Here our variables are *sp1*, *sp2* and *sp3*. 
+*sp1* and *sp2* are mirror of each other and *sp3* is identical between methods thus
+**(1)** *sp1 A* go with *sp2 B*,  **(2)** *sp2 1* go with *sp1 B* and **(3)** *sp3 A* and *B* are in the same position. Following this logic:
+  - Sample 1 contain either *sp1 + sp3* (for A) or *sp2 + sp3* (for B). *sp3* isn't discriminant between A and B so Sample1 A and B are in the same position in the ordination space because of **(1)*
+  - Sample 2 contain either *sp2* (for A) or *sp1* (for B).So Sample2 A and B are in the same position in the ordination space because of **(2)**
+  - Sample 3 are identical between A and B, not surprising that they are ath the same position
+  
+Now the second option
+```{r}
+A %>% 
+  t() %>%
+  knitr::kable()
+B%>% 
+  t() %>%
+  knitr::kable()
+```
+
+
+
+
+```{r}
+as.data.frame(t(A)/rowSums(t(A))) %>%
+  #t() %>%
+  ade4::dudi.coa( nf = 3, scannf = FALSE) -> pca_A_t
+factoextra::fviz_pca_biplot(pca_A, repel = TRUE, col.var = "#2E9FDF", col.ind = "#696969")
+
+as.data.frame(t(B)/rowSums(t(B))) %>%
+  #t() %>%
+  ade4::dudi.coa(nf = 3,scannf = FALSE) -> pca_B_t
+factoextra::fviz_pca_biplot(pca_B, repel = TRUE, col.var = "#2E9FDF", col.ind = "#696969")
+```
+
+Here samples are considered as variables defining species. We can already see that sample 3 account for no variation between species, which is normal because sp1 2 and 3 are represented equally in sample 3 (regardless of the method A or B).
+
+Now lets compute the coinertia. The coineratia in this case with maximise covariance between samples A axis and sample B axis
+
+Here we could suppose that we will detect differences between all species 1 A and B, or species 2 A and B but no differences between species 3 A and B
+```{r}
+coin_test <- ade4::coinertia(pca_A_t, pca_B_t, scan = FALSE, nf = 3)
+
+summary(coin_test)
+plot(coin_test)
+```
+
+Zut !
+
+### Create PCA for 4 methods
+
+```{r}
+pca.for.method(tab = meta_g_b_decond_table, method = "R1_B") -> dudi_b_r1
+
+pca.for.method(meta_g_b_decond_table, "R2_B") -> dudi_b_r2
+
+pca.for.method(meta_g_b_decond_table, "R1_G") -> dudi_g_r1
+
+pca.for.method(meta_g_b_decond_table, "R2_G") -> dudi_g_r2
+
+# Just check if sample are well order (it should not impact the analysis but I do in case it would.
+# And it always better to know it is arrange the same way between the 4 method)
+dudi_b_r1$tab%>%
+    colnames%>%
+    str_extract("BU_[A-Z]+_\\d+") == dudi_b_r2$tab%>%
+                                        colnames%>% 
+                                        str_extract("BU_[A-Z]+_\\d+")
+dudi_b_r1$tab%>%
+    colnames%>%
+    str_extract("BU_[A-Z]+_\\d+") == dudi_g_r2$tab%>%
+                                        colnames%>%
+                                        str_extract("BU_[A-Z]+_\\d+")
+#no ts 15 in G
+#no ser 10 in B
+dudi_b_r1$tab%>%
+    colnames%>%
+    str_extract("BU_[A-Z]+_\\d+") == dudi_g_r1$tab%>%
+                                        colnames %>%
+                                        str_extract("BU_[A-Z]+_\\d+")
+```
+
+I'm doing the Hellinger transformation on the matrix (OTU x site). Usually the transformation (and the coinertia by extension) is done on the transpose of this matrix (site x species/OUT).It is because most of the time we are interested in the difference of species composition in sites. However here we are interested in the species detection difference, in other word we are looking for difference of species abundances in sites
+
+/!\ Do separate or merge Hellinger transformation on the 2 df ?
+
+### Metabarcoding R1 vs R2
+
+```{r}
+coin1 <- ade4::coinertia(dudi_b_r1, dudi_b_r2, scan = FALSE, nf = 2)
 
 summary(coin1)
 plot(coin1)
-coin.graph(coin1,meta_obj= meta_g_b_decond_table_rare, brin = c("R1","R2"), method = c("metaB", "metaB"))
+coin.graph(coin_obj = coin1, meta_obj= meta_g_b_decond_table, brin = c("R1","R2"), method = c("metaB", "metaB"))
 ```
 
 ### Metagenomic R1 vs R2
+
 ```{r}
-coin2 <- coinertia(dudi_g_r1,dudi_g_r2, scan = FALSE, nf = 2)
+coin2 <- ade4::coinertia(dudi_g_r1, dudi_g_r2, scan = FALSE, nf = 2)
 
 summary(coin2)
 plot(coin2)
-coin.graph(coin2,meta_obj= meta_g_b_decond_table_rare, brin = c("R1","R2"), method = c("metaG", "metaG"))
+coin.graph(coin2, meta_obj= meta_g_b_decond_table, brin = c("R1","R2"), method = c("metaG", "metaG"))
 ```
 
 ### Metabarcoding R1 vs Metagenomic R1
 ```{r}
-coin3 <- coinertia(dudi_b_r1,dudi_g_r1, scan = FALSE, nf = 2)
+coin3 <- ade4::coinertia(dudi_b_r1, dudi_g_r1, scan = FALSE, nf = 2)
 
 summary(coin3)
 plot(coin3)
-coin.graph(coin3,meta_obj= meta_g_b_decond_table_rare, brin = c("R1","R1"), method = c("metaB", "metaG"))
+coin.graph(coin3, meta_obj= meta_g_b_decond_table, brin = c("R1","R1"), method = c("metaB", "metaG"))
 ```
 
 ### Metabarcoding R2 vs Metagenomic R2
 ```{r}
-coin4 <- coinertia(dudi_b_r2,dudi_g_r2, scan = FALSE, nf = 2)
+coin4 <- ade4::coinertia(dudi_b_r2, dudi_g_r2, scan = FALSE, nf = 2)
 
 summary(coin4)
 plot(coin4)
-coin.graph(coin4,meta_obj= meta_g_b_decond_table_rare, brin = c("R2","R2"), method = c("metaB", "metaG"))
+coin.graph(coin_obj = coin4, meta_obj= meta_g_b_decond_table, brin = c("R2","R2"), method = c("metaB", "metaG"))
+```
+
+## Phyloseq
+
+```{r}
+library(phyloseq)
+
+meta_g_b_decond_table_rare %>%
+  select(starts_with("BU"),OTU) %>%
+  column_to_rownames("OTU")-> otu_tab
+
+
+meta_g_b_decond_table_rare %>%
+  select(OTU, kingdom, phylum, class, order, family, genus) %>%
+  column_to_rownames("OTU") %>%
+  as.matrix-> tax_tab
+
+data.frame(sample_ID = colnames(otu_table)) %>%
+  mutate(brin = str_extract(sample_ID, "R\\d"),
+         method = str_extract(sample_ID, "[A-Z+]$")) %>%
+  column_to_rownames("sample_ID") -> sampledata
+
+physeq_obj = phyloseq(otu_table(otu_tab, taxa_are_rows = T), tax_table(tax_tab), sample_data(sampledata))
+
+
+phyloseq_to_edgeR = function(physeq, group, method="RLE", ...){
+  require("edgeR")
+  require("phyloseq")
+  # Enforce orientation.
+  if( !taxa_are_rows(physeq) ){ physeq <- t(physeq) }
+  x = as(otu_table(physeq), "matrix")
+  # Add one to protect against overflow, log(0) issues.
+  x = x + 1
+  # Check `group` argument
+  if( identical(all.equal(length(group), 1), TRUE) & nsamples(physeq) > 1 ){
+    # Assume that group was a sample variable name (must be categorical)
+    group = get_variable(physeq, group)
+  }
+  # Define gene annotations (`genes`) as tax_table
+  taxonomy = tax_table(physeq, errorIfNULL=FALSE)
+  if( !is.null(taxonomy) ){
+    taxonomy = data.frame(as(taxonomy, "matrix"))
+  } 
+  # Now turn into a DGEList
+  y = DGEList(counts=x, group=group, genes=taxonomy, remove.zeros = TRUE, ...)
+  # Calculate the normalization factors
+  z = calcNormFactors(y, method=method)
+  # Check for division by zero inside `calcNormFactors`
+  if( !all(is.finite(z$samples$norm.factors)) ){
+    stop("Something wrong with edgeR::calcNormFactors on this data,
+         non-finite $norm.factors, consider changing `method` argument")
+  }
+  # Estimate dispersions
+  return(estimateTagwiseDisp(estimateCommonDisp(z)))
+}
+view(z$samples)
+dge = phyloseq_to_edgeR(physeq_obj, group="method")
+# Perform binary test
+et = exactTest(dge)
+# Extract values from test results
+tt = topTags(et, n=nrow(dge$table), adjust.method="BH", sort.by="PValue")
 ```
 
 ## Metacoder
@@ -294,45 +573,122 @@ coin.graph(coin4,meta_obj= meta_g_b_decond_table_rare, brin = c("R2","R2"), meth
 ### Function that make the metacoder object that contain the taxonomic comparison tree
 
 ```{r}
+
 make.tax.tree.comp = function(df,method){
-  meta_g_b_decond_table_rare %>%
+  df %>%
   select(OTU, kingdom, phylum, class, order, family, genus, species, taxonomy, ends_with(method[1]), ends_with(method[2]))%>%
-  # {{standardization of the table produce by the "method 1" (first method put in the vector)}}
-  mutate(across(ends_with(method[1]), ~ sqrt(. / rowSums(across(ends_with(method[1])))), .names = "hellinger_{col}"), 
-  # {{standardization of the table produce by the "method 2" (second method put in the vector)}}       
-  across(ends_with(method[2]), ~ sqrt(. / rowSums(across(ends_with(method[2])))), .names = "hellinger_{col}"),.keep = "unused")%>%
-  # {{remove species that don't appear in the 2 method that we compare in this chunk}}
-  mutate(total = rowSums(across(starts_with("hellinger_") )))%>%
+  mutate(sum_col = rowSums(across(c(ends_with(method[1]), ends_with(method[2]))),na.rm = T))%>%
+  filter(sum_col != 0)%>%
+  ## standardization of the table produce by the "method 1" (first method put in the vector)
+  # mutate(across(ends_with(method[1]), ~ sqrt(. / rowSums(across(ends_with(method[1])))), .names = "hellinger_{col}"), 
+  ## standardization of the table produce by the "method 2" (second method put in the vector)    
+  #across(ends_with(method[2]), ~ sqrt(. / rowSums(across(ends_with(method[2])))), .names = "hellinger_{col}"),.keep = "unused")%>%
+  # remove species that don't appear in the 2 method that we compare in this chunk}}
+  mutate(total = rowSums(across(starts_with("BU")), na.rm = T))%>%
   filter(total !=0 )%>%
-  # {{create metacoder object}}
+  # create metacoder object
   metacoder::parse_tax_data(class_cols = "taxonomy", # The column in the input table
                       class_sep = "; ",
                       class_regex = "^([a-z]{0,1})_{0,2}(.*)$",
                       class_key = c("tax_rank" = "taxon_rank", "name" = "taxon_name")) -> obj
-  
-  # {{compute abudance (standadize by hellinger) per taxon for the 2 methode}}
+  obj$data$tax_data
+  # compute abudance (standadize by hellinger) per taxon for the 2 methode
   obj$data$tax_abund <- metacoder::calc_taxon_abund(obj, "tax_data",
-                                       cols = startsWith(colnames(obj$data$tax_data),"hellinger"))
+                                       cols = startsWith(colnames(obj$data$tax_data),"BU"))
   
   obj$data$tax_abund_group <- metacoder::calc_taxon_abund(obj, "tax_data",
-                                       cols = startsWith(colnames(obj$data$tax_data),"hellinger"),
+                                       cols = startsWith(colnames(obj$data$tax_data),"BU"),
                                                          groups = str_extract(str_subset(colnames(obj$data$tax_data), "_R\\d_[A-Z+]"), "R\\d_[A-Z+]"))
-  
   obj$data$diff_table = metacoder::compare_groups(obj, "tax_abund",
-                                       cols = (startsWith(colnames(obj$data$tax_abund),"hellinger")),
+                                       cols = startsWith(colnames(obj$data$tax_abund),"BU"),
                                                          groups = str_extract(str_subset(colnames(obj$data$tax_abund), "_R\\d_[A-Z+]"), "R\\d_[A-Z+]"))
   obj = mutate_obs(obj, "diff_table",
                   wilcox_p_value = p.adjust(wilcox_p_value, method = "fdr"))
-  # {{Ns. set to 0}}
+  # Ns. set to 0
   obj$data$diff_table%>%
-    mutate(median_diff = case_when(wilcox_p_value > 0.05 ~0,
+    mutate(median_diff = case_when(wilcox_p_value > 0.05 ~ 0,
                       .default  = median_diff),
-           log2_median_ratio = case_when(wilcox_p_value > 0.05 ~0,
-                      .default  = median_diff))
+           log2_median_ratio = case_when(wilcox_p_value > 0.05 ~ 0,
+                      .default  = median_diff)) -> obj$data$diff_table
+  
+
   return(obj)
 }
 
 ```
+
+```{r}
+  # differential analysis of sequence read count data with edgeR
+  #obj$data$tax_data %>%
+  #  group_by(family)%>%
+  #  summarise()
+meta_g_b_decond_table_rare%>%
+  make.tax.tree.comp(method = c("R1_B","R2_B")) -> obj1
+
+obj1$data$tax_data %>%
+  select(starts_with("BU"),taxon_id) %>%
+  column_to_rownames("taxon_id") -> otu_tab
+
+
+obj1$data$tax_data %>%
+  select(taxon_id , kingdom, phylum, class, order, family, genus) %>%
+  column_to_rownames("taxon_id") %>%
+  as.matrix-> tax_tab
+
+data.frame(sample_ID = colnames(otu_tab)) %>%
+  mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]$")) %>%
+  column_to_rownames("sample_ID") -> sampledata
+
+physeq_obj = phyloseq(otu_table(otu_tab, taxa_are_rows = T), tax_table(tax_tab), sample_data(sampledata))
+
+ge = phyloseq_to_edgeR(physeq_obj, group="method")
+et = exactTest(ge, pair=c("R1_B", "R2_B"))
+# Extract values from test results
+tt = topTags(et, n=nrow(dge$table), adjust.method="fdr", sort.by="PValue")
+res = tt@.Data[[1]]
+alpha = 0.05
+sigtab = res[(res$FDR < alpha), ]
+sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(physeq_obj)[rownames(sigtab), ], "matrix"))
+   
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+    scale_fill_brewer(palette = palname, ...)
+}
+sigtabgen = subset(sigtab, !is.na(genus))
+# Phylum order
+x = tapply(sigtabgen$logFC, sigtabgen$phylum, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$phylum = factor(as.character(sigtabgen$phylum), levels = names(x))
+# Genus order
+x = tapply(sigtabgen$logFC, sigtabgen$genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen$genus), levels = names(x))
+ggplot(sigtabgen, aes(x = genus, y = logFC, color = phylum)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
+
+obj1$data$tax_data %>%
+  pivot_longer(starts_with("BU"), names_to = "sample_id", values_to =  "reads")%>%
+  mutate(method = str_extract(sample_id, "R\\d_[BG]"))%>%
+  group_by(taxon_id,method)%>%
+
+  summarise(sum_reads = sum(reads))%>%
+  pivot_wider(names_from = method, values_from = sum_reads)%>%
+  mutate(diff_read = R1_B - R2_B)%>%
+  mutate(diff_is = case_when(taxon_id %in% rownames(sigtabgen) ~ "signif",
+                   !(taxon_id %in% rownames(sigtabgen)) ~ "NS"))%>%
+  ggplot()+
+  geom_point(aes(taxon_id, diff_read, col = method))+
+  facet_wrap(~diff_is)
+
+```
+FC is for fold change which is a ratio between 2 quantities. For exemple :
+A = 10 and B = 30 -> the FC of B with respect to A  is B/A, in this case it is
+60/30 = 2 ; it is defined as a fold-change of 3
+30/60 = 0.5 ; it is defined as a fold-change of 2
+
+(if the pair is c("A","B") then the comparison is B - A, so genes with positive 
+log-fold change are up-regulated in group B compared
+with group A (and vice versa for genes with negative log-fold change).)
 
 ### Metabarcoding R1 vs R2 
 
@@ -360,7 +716,8 @@ Here we see that in the phylum *Protobacteia* the class *Gammaprotobacteria* is 
 
 #### Better version with statistical significance
 ```{r}
-
+max(obj1$data$diff_table$log2_median_ratio)
+obj1$data$diff_table -> temp
 obj1%>%
   filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
   heat_tree(node_label = taxon_names,
@@ -394,7 +751,7 @@ obj1%>%
           node_color_interval = c(-max(abs(median_diff)), max(abs(median_diff))), # symmetric interval
           node_color_range = c("cyan", "gray", "magenta"), # diverging colors
           node_size_axis_label = "OTU count",
-          node_color_axis_label = "Log 2 ratio of median counts",
+          node_color_axis_label = "Median diff",
           layout = "davidson-harel", initial_layout = "reingold-tilford",
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 
