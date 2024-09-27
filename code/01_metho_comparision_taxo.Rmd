@@ -157,7 +157,7 @@ metag1_decont_table %>%
                                                genus == genus,  species == species, taxonomy == taxonomy)) %>%
    mutate(across(where(is.numeric), ~ replace(., is.na(.), 0)))%>%
    select(-c(BU_TS_15_R1_B, BU_TS_15_R2_B)) -> meta_g_b_decond_table # remove sample because missing for metaG
-
+meta_g_b_decond_table %>%colnames
 ```
 
 ```{r}
@@ -194,9 +194,8 @@ rarefaction.func = function(df,rar_sample, rarcur = T){
 ### Variance per OTU per method across samples
 
 ```{r}
-ge %>% as.data.frame()%>%
-  filter(rowSums(across(starts_with("BU")), na.rm = T) != 0 )%>%
-  rownames_to_column("OTU")%>%
+meta_g_b_decond_table %>% 
+  filter(rowSums(across(starts_with("BU")), na.rm = T) != 0) %>%
   pivot_longer(starts_with("BU"), names_to = "sample_ID", values_to = "reads") %>%
   mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]")) %>%
   group_by(OTU, method) %>%
@@ -507,28 +506,11 @@ plot(coin4)
 coin.graph(coin_obj = coin4, meta_obj= meta_g_b_decond_table, brin = c("R2","R2"), method = c("metaB", "metaG"))
 ```
 
-## Phyloseq
+
+## Metacoder and phyloseq
 
 ```{r}
 library(phyloseq)
-
-meta_g_b_decond_table_rare %>%
-  select(starts_with("BU"),OTU) %>%
-  column_to_rownames("OTU")-> otu_tab
-
-
-meta_g_b_decond_table_rare %>%
-  select(OTU, kingdom, phylum, class, order, family, genus) %>%
-  column_to_rownames("OTU") %>%
-  as.matrix-> tax_tab
-
-data.frame(sample_ID = colnames(otu_table)) %>%
-  mutate(brin = str_extract(sample_ID, "R\\d"),
-         method = str_extract(sample_ID, "[A-Z+]$")) %>%
-  column_to_rownames("sample_ID") -> sampledata
-
-physeq_obj = phyloseq(otu_table(otu_tab, taxa_are_rows = T), tax_table(tax_tab), sample_data(sampledata))
-
 
 phyloseq_to_edgeR = function(physeq, group, method="RLE", ...){
   require("edgeR")
@@ -560,20 +542,553 @@ phyloseq_to_edgeR = function(physeq, group, method="RLE", ...){
   # Estimate dispersions
   return(estimateTagwiseDisp(estimateCommonDisp(z)))
 }
-view(z$samples)
-dge = phyloseq_to_edgeR(physeq_obj, group="method")
-# Perform binary test
-et = exactTest(dge)
-# Extract values from test results
-tt = topTags(et, n=nrow(dge$table), adjust.method="BH", sort.by="PValue")
 ```
 
-## Metacoder
+### Function that compute differential analysis
+ 
+return an object compatible with metacoder
+
+```{r}
+differential.analysis <- function(obj, pair){
+  
+  # Extract taxon rank associated to each Metacoder taxon_id
+  rank_df = data.frame(taxon_rank = sapply(names(obj$taxa), function(x) obj$taxa[[x]]$rank$name)) %>%
+  rownames_to_column("taxon_id")
+  
+  # Join taxon rank and taxon total abundances data frame
+  rank_df %>%
+    left_join(obj$data$tax_abund, by = "taxon_id", ) %>%
+  tibble -> tax_abund
+  
+  # Create sample data (data frame that indicate sample's condition/method belonging)
+  data.frame(sample_ID = colnames(tax_abund %>%
+                                    select(starts_with("BU")))) %>%
+      mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]$")) %>%
+      column_to_rownames("sample_ID") -> sampledata
+  # Initialize output dataframe
+  pair_wise_taxa_df = data.frame()
+  for(t_rank in unique(tax_abund$taxon_rank)){
+    
+    # Compute OTU table with sample from both method in colums and taxa in rows
+    tax_abund %>%
+      filter(taxon_rank == t_rank) %>%
+      select(starts_with("BU"), taxon_id) %>%
+      column_to_rownames("taxon_id") -> otu_tab
+    
+    # Compute tax table taxon id as row name and also as a colums. Need to be formatred like this 
+    # for phyloseq func. I just need to have colums that discriminates taxe, which taxon_id from 
+    # metacoder do perfecly. It is why do not recover the full taxa description (Kindom, class, ...)
+    tax_abund%>%
+      filter(taxon_rank == t_rank) %>%
+      select(taxon_id)%>%
+      mutate(taxon_id2 = taxon_id)%>%
+      column_to_rownames("taxon_id2")%>%
+      as.matrix-> tax_tab
+  
+    physeq_obj = phyloseq(otu_table(otu_tab, taxa_are_rows = T), tax_table(tax_tab), sample_data(sampledata))
+  
+    ge = phyloseq_to_edgeR(physeq_obj, group="method")
+    et = exactTest(ge, pair=c(pair[2], pair[1]))
+    # Extract values from test results
+    tt = topTags(et, n=nrow(dge$table), adjust.method="fdr", sort.by="PValue")
+    res = tt@.Data[[1]]
+    
+    pair_wise_taxa_df %>%
+      bind_rows(res %>%
+                  select(taxon_id, logFC, logCPM, PValue, FDR))%>%
+      tibble() -> pair_wise_taxa_df
+  }
+  return(pair_wise_taxa_df)
+}
+```
 
 ### Function that make the metacoder object that contain the taxonomic comparison tree
 
 ```{r}
 
+make.tax.tree.comp = function(df, pair){
+  df %>%
+  select(OTU, kingdom, phylum, class, order, family, genus, species, taxonomy, ends_with(pair[1]), ends_with(pair[2]))%>%
+  mutate(sum_col = rowSums(across(c(ends_with(pair[1]), ends_with(pair[2]))),na.rm = T))%>%
+  filter(sum_col != 0)%>%
+  ## standardization of the table produce by the "pair 1" (first pair put in the vector)
+  # mutate(across(ends_with(pair[1]), ~ sqrt(. / rowSums(across(ends_with(pair[1])))), .names = "hellinger_{col}"), 
+  ## standardization of the table produce by the "pair 2" (second pair put in the vector)    
+  #across(ends_with(pair[2]), ~ sqrt(. / rowSums(across(ends_with(pair[2])))), .names = "hellinger_{col}"),.keep = "unused")%>%
+  # remove species that don't appear in the 2 pair that we compare in this chunk}}
+  mutate(total = rowSums(across(starts_with("BU")), na.rm = T))%>%
+  filter(total !=0 )%>%
+  # create metacoder object
+  metacoder::parse_tax_data(class_cols = "taxonomy", # The column in the input table
+                      class_sep = "; ",
+                      class_regex = "^([a-z]{0,1})_{0,2}(.*)$",
+                      class_key = c("tax_rank" = "taxon_rank", "name" = "taxon_name")) -> obj
+  
+  # compute abudance (standadize by hellinger) per taxon for the 2 paire
+  obj$data$tax_abund <- metacoder::calc_taxon_abund(obj, "tax_data",
+                                       cols = startsWith(colnames(obj$data$tax_data),"BU"))
+  
+  obj$data$tax_abund_group <- metacoder::calc_taxon_abund(obj, "tax_data",
+                                       cols = startsWith(colnames(obj$data$tax_data),"BU"),
+                                                         groups = str_extract(str_subset(colnames(obj$data$tax_data), "_R\\d_[A-Z+]"), "R\\d_[A-Z+]"))
+  obj$data$diff_table = metacoder::compare_groups(obj, "tax_abund",
+                                       cols = startsWith(colnames(obj$data$tax_abund),"BU"),
+                                                         groups = str_extract(str_subset(colnames(obj$data$tax_abund), "_R\\d_[A-Z+]"), "R\\d_[A-Z+]"))
+  obj = mutate_obs(obj, "diff_table",
+                  wilcox_p_value = p.adjust(wilcox_p_value, method = "fdr"))
+  # Ns. set to 0
+  obj$data$diff_table%>%
+    mutate(median_diff = case_when(wilcox_p_value > 0.05 ~ 0,
+                      .default  = median_diff),
+           log2_median_ratio = case_when(wilcox_p_value > 0.05 ~ 0,
+                      .default  = median_diff)) -> obj$data$diff_table
+  
+  
+  # differential analysis of sequence read count data with edgeR
+  obj$data$diff_analysis_table = differential.analysis(obj = obj, pair = pair)
+  
+  # Ns. set to 0
+  obj$data$diff_analysis_table%>%
+    mutate(logFC = case_when(FDR > 0.05 ~ 0,
+                      .default  = logFC),
+           logCPM = case_when(FDR > 0.05 ~ 0,
+                      .default  = logCPM)) -> obj$data$diff_analysis_table
+  return(obj)
+}
+
+```
+
+
+### Metabarcoding R1 vs R2 
+
+```{r}
+meta_g_b_decond_table%>%
+  make.tax.tree.comp(pair = c("R1_B","R2_B")) -> obj1
+
+obj1$data$diff_analysis_table
+obj1%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
+            node_size = R1_B+R2_B,
+            node_color = R1_B-R2_B,
+            node_color_range = c("blue", "gray", "red"),
+            node_color_interval = c(-max(abs(R1_B-R2_B)), max(abs(R1_B-R2_B))),
+            node_color_axis_label = "Standardized abudance \n difference across site (R1_B-R2_B)",
+            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
+            layout = "davidson-harel", initial_layout = "reingold-tilford")
+
+```
+  
+
+Here we see that in the phylum *Protobacteia* the class *Gammaprotobacteria* is mostly detected by R1 and  *Alphaprotobacteria* is mostly detected by R1.
+*Fimicutes* and *Actinobacteria* are better detected by R1
+
+#### Better version with statistical significance based on rank
+```{r}
+max(obj1$data$diff_table$log2_median_ratio)
+
+obj1%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval = c(-10, 10), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+obj1 %>%
+  metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
+  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
+  metacoder::heat_tree(node_label = cleaned_names,
+            node_size = n_obs, # number of OTUs
+            node_color = log2_median_ratio, # difference between groups
+            node_color_interval = c(-10, 10), # symmetric interval
+            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+            node_size_axis_label = "OTU count",
+            node_color_axis_label = "Log 2 ratio of median counts",
+            layout = "da", initial_layout = "re", # good layout for large trees
+            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+obj1%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = median_diff, # difference between groups
+          node_color_interval = c(-max(abs(median_diff)), max(abs(median_diff))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Median diff",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+```
+
+#### Differential expression of replicated count data
+
+```{r}
+
+obj1%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+```
+
+### Metagenomic R1 vs R2 
+
+```{r}
+meta_g_b_decond_table%>%
+  make.tax.tree.comp(pair = c("R1_G","R2_G")) -> obj2
+obj2%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
+            node_size = R1_G+R2_G,
+            node_color = R1_G-R2_G,
+            node_color_range = c("blue", "gray", "red"),
+            node_color_interval = c(-max(abs(R1_G-R2_G)), max(abs(R1_G-R2_G))),
+            node_color_axis_label = "Standardized abudance \n difference across site (R1_G-R2_G)",
+            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
+            layout = "davidson-harel", initial_layout = "reingold-tilford")
+
+```
+
+Different pattern for metaG than metaB here in phylum *Protobacteia* the class *Gammaprotobacteria* and *Alphaprotobacteria* are both more detected by R1.
+*Fimicutes* and *Actinobacteria* are also better detected by R1
+
+#### Better version with statistical significance
+```{r}
+
+obj2%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval = c(-10, 10), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+obj2 %>%
+  metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
+  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
+  metacoder::heat_tree(node_label = cleaned_names,
+            node_size = n_obs, # number of OTUs
+            node_color = log2_median_ratio, # difference between groups
+            node_color_interval = c(-10, 10), # symmetric interval
+            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+            node_size_axis_label = "OTU count",
+            node_color_axis_label = "Log 2 ratio of median counts",
+            layout = "da", initial_layout = "re", # good layout for large trees
+            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+obj2%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = median_diff, # difference between groups
+          node_color_interval = c(-max(abs(median_diff)), max(abs(median_diff))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+```
+
+#### Differential expression of replicated count data
+
+```{r}
+obj2$data$
+obj2%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+```
+
+### Metabarcoding R1 vs Metagenomic R1
+
+```{r}
+meta_g_b_decond_table%>%
+  make.tax.tree.comp(pair = c("R1_B","R1_G")) -> obj3
+
+obj3%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
+            node_size = R1_B+R1_G,
+            node_color = R1_B-R1_G,
+            node_color_range = c("blue", "gray", "red"),
+            node_color_interval = c(-max(abs(R1_B - R1_G)), max(abs(R1_B - R1_G))),
+            node_color_axis_label = "Standardized abudance \n difference across site (R1_B-R1_G)",
+            node_size_axis_label = "OTU abudance sum per taxon\n",
+            layout = "davidson-harel", initial_layout = "reingold-tilford")
+
+```
+
+#### Better version with statistical significance
+```{r}
+
+obj3%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval = c(-10,10), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+
+obj3 %>%
+  metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
+  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
+  metacoder::heat_tree(node_label = cleaned_names,
+            node_size = n_obs, # number of OTUs
+            node_color = log2_median_ratio, # difference between groups
+            node_color_interval = c(-10, 10), # symmetric interval
+            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+            node_size_axis_label = "OTU count",
+            node_color_axis_label = "Log 2 ratio of median counts",
+            layout = "da", initial_layout = "re", # good layout for large trees
+            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+obj3%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = median_diff, # difference between groups
+          node_color_interval = c(-max(abs(median_diff)), max(abs(median_diff))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+```
+
+#### Differential expression of replicated count data
+
+```{r}
+
+obj3%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+```
+
+
+### Metabarcoding R2 vs Metagenomic R2
+
+```{r}
+meta_g_b_decond_table%>%
+  make.tax.tree.comp(pair = c("R2_B","R2_G")) -> obj4
+
+obj4%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
+            node_size = R2_B+R2_G,
+            node_color = R2_B-R2_G,
+            node_color_range = c("blue", "gray", "red"),
+            node_color_interval = c(-max(abs(R2_B-R2_G)), max(abs(R2_B-R2_G))),
+            node_color_axis_label = "Standardized abudance \n difference across site (R2_B-R2_G)",
+            node_size_axis_label = "OTU abudance sum per taxon\n",
+            layout = "davidson-harel", initial_layout = "reingold-tilford")
+
+```
+#### Better version with statistical significance
+```{r}
+
+obj4%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval = c(-10, 10), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+
+obj4 %>%
+  metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
+  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
+  metacoder::heat_tree(node_label = cleaned_names,
+            node_size = n_obs, # number of OTUs
+            node_color = log2_median_ratio, # difference between groups
+            node_color_interval = c(-10, 10), # symmetric interval
+            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+            node_size_axis_label = "OTU count",
+            node_color_axis_label = "Log 2 ratio of median counts",
+            layout = "da", initial_layout = "re", # good layout for large trees
+            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+obj4%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = median_diff, # difference between groups
+          node_color_interval = c(-max(abs(median_diff)), max(abs(median_diff))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+```
+
+#### Differential expression of replicated count data
+
+```{r}
+obj4$data$diff_analysis_table
+obj4%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+```
+
+Zero inflantion might bias the variance of taxa abudance in each method thus scaling factors are maybeunderestimated 
+
+## differencial expression analysis
+## Phyloseq
+
+
+
+Test with unbalanced library size inside one ech (analogue to bias caused by one ech for exemple)
+```{r}
+data.frame(A =  c(10,     10,    20,    20),
+           B =  c(10,     10,    20,    20),
+           C =  c(10,     20,    10,    20),
+           D =  c(100,    200,   50,    50),
+           sp = c("sp1", "sp2", "sp3", "sp4"))%>%
+  column_to_rownames("sp")-> otu_tab_test
+```
+The model should correct effect size, so with those data I expect:
+ - no difference of expression for species 1 between method M1 and M1 (M1 = A, B ; M2 =C, D)
+ - difference of around 2 or 3 fold change(FC) of sp2
+ - difference of around 0.5 fold change of sp3
+ - difference of  around 0.5 fold change for species 4 but NS.
+ (FC = M2/M1)
+
+```{r}
+data.frame(taxon_id = c("sp1", "sp2", "sp3", "sp4"),
+         family = c("f1", "f2", "f3" ,"f4"), 
+         genus = c("g1", "g2", "g3", "g4")) %>%
+  column_to_rownames("taxon_id") %>%
+  as.matrix-> tax_tab_test
+
+data.frame(sample_ID = colnames(otu_tab_test)) %>%
+  mutate(method =c("M1", "M1", "M2", "M2")) %>%
+  column_to_rownames("sample_ID") -> sampledata_test
+
+physeq_obj_test = phyloseq(otu_table(otu_tab_test, taxa_are_rows = T), tax_table(tax_tab_test), sample_data(sampledata_test))
+
+dge_test = phyloseq_to_edgeR(physeq_obj_test, group="method")
+et_test = exactTest(dge_test, pair=c("M1", "M2"))
+# Extract values from test results
+tt_test = topTags(et_test, n=nrow(dge_test$table), adjust.method="fdr", sort.by="PValue")
+res_test = tt_test@.Data[[1]]
+alpha = 0.05
+sigtab_test = res_test[(res_test$FDR < alpha), ]
+sigtab_test = cbind(as(sigtab_test, "data.frame"), as(tax_table(physeq_obj_test)[rownames(sigtab_test), ], "matrix"))
+res_test$FC = 2^res_test$logFC
+
+knitr::kable(res_test)
+```
+
+
+```{r}
+
+theme_set(theme_bw())
+scale_fill_discrete <- function(palname = "Set1", ...) {
+    scale_fill_brewer(palette = palname, ...)
+}
+sigtabgen_test = subset(sigtab_test, !is.na(genus))
+# Phylum order
+x = tapply(sigtabgen_test$logFC, sigtabgen_test$family, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen_test$family = factor(as.character(sigtabgen_test$family), levels = names(x))
+# Genus order
+x = tapply(sigtabgen_test$logFC, sigtabgen_test$genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtabgen$Genus = factor(as.character(sigtabgen_test$genus), levels = names(x))
+ggplot(sigtabgen_test, aes(x = genus, y = logFC, color = family)) + geom_point(size=6) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
+```
+
+It seems that the model is able to correct the biais inside one sample and detect species that are differently distibued between the 2 methods
+
+Test with unbalanced library size inside one method
+```{r}
+data.frame(A =  c(10,     10,    20,    20),
+           B =  c(10,     10,    20,    20),
+           C =  c(100,    200,   100,   200),
+           D =  c(100,    200,   50,    50),
+           sp = c("sp1", "sp2", "sp3", "sp4"))%>%
+  column_to_rownames("sp")-> otu_tab_test2
+```
+The model should correct effect size, so with those data I expect:
+ - no difference of expression for species 1 between method M1 and M1 (M1 = A, B ; M2 =C, D)
+ - difference of around 2 or 3 fold change(FC) of sp2
+ - difference of around 0.5 fold change of sp3
+ - difference of  around 0.5 fold change for species 4 but NS.
+ (FC = M2/M1)
+ 
+```{r}
+physeq_obj_test2 = phyloseq(otu_table(otu_tab_test2, taxa_are_rows = T), tax_table(tax_tab_test), sample_data(sampledata_test))
+
+dge_test2 = phyloseq_to_edgeR(physeq_obj_test2, group="method")
+et_test2 = exactTest(dge_test2, pair=c("M1", "M2"))
+# Extract values from test results
+tt_test2 = topTags(et_test2, n=nrow(dge_test2$table), adjust.method="fdr", sort.by="PValue")
+res_test2 = tt_test2@.Data[[1]]
+alpha = 0.05
+sigtab_test2 = res_test2[(res_test2$FDR < alpha), ]
+sigtab_test2 = cbind(as(sigtab_test2, "data.frame"), as(tax_table(physeq_obj_test2)[rownames(sigtab_test2), ], "matrix"))
+res_test2$FC = 2^res_test2$logFC
+knitr::kable(res_test2)
+knitr::kable(res_test)
+```
+
+For this data set the model is able to correct the biais cause by one method and detect species that are differently distributed between the 2 methods.
+For both data set we conclude the same thing, which is good. 
+
+
+
+
+```{r}
 make.tax.tree.comp = function(df,method){
   df %>%
   select(OTU, kingdom, phylum, class, order, family, genus, species, taxonomy, ends_with(method[1]), ends_with(method[2]))%>%
@@ -610,12 +1125,11 @@ make.tax.tree.comp = function(df,method){
                       .default  = median_diff),
            log2_median_ratio = case_when(wilcox_p_value > 0.05 ~ 0,
                       .default  = median_diff)) -> obj$data$diff_table
-  
 
   return(obj)
 }
-
 ```
+
 
 ```{r}
   # differential analysis of sequence read count data with edgeR
@@ -628,8 +1142,24 @@ meta_g_b_decond_table_rare%>%
 obj1$data$tax_data %>%
   select(starts_with("BU"),taxon_id) %>%
   column_to_rownames("taxon_id") -> otu_tab
+names(obj1$taxa)
+# Get rank(taxa) of each id
+
+tab %>%
+    select(taxa) %>%
+    pivot_longer(starts_with("BU"), names_to = "sample_id", values_to = "reads") %>%
+    group_by(sample_id, {{taxa}},taxon_id) %>%
+    summarise(reads_sum = sum(reads))%>%
+    pivot_wider(names_from = "sample_id", values_from = "reads_sum", values_fill = 0) 
+    
+
+tax_abund%>%
+  filter(taxon_rank == "k")
+differential.analysis(obj1)
 
 
+
+obj1$data$
 obj1$data$tax_data %>%
   select(taxon_id , kingdom, phylum, class, order, family, genus) %>%
   column_to_rownames("taxon_id") %>%
@@ -646,7 +1176,40 @@ et = exactTest(ge, pair=c("R1_B", "R2_B"))
 # Extract values from test results
 tt = topTags(et, n=nrow(dge$table), adjust.method="fdr", sort.by="PValue")
 res = tt@.Data[[1]]
-alpha = 0.05
+
+pair_wise_taxa_df = res%>%select(logFC, logCPM, PValue, FDR)
+taxa = "order"
+
+obj1$data$tax_data%>%
+  compute.diff.analysis.for.taxa(taxa = order)
+
+obj1$data$tax_data %>%
+    select(starts_with("BU"),taxon_id) %>%
+    column_to_rownames("taxon_id") -> otu_tab
+
+  for(taxa in c( "kingdom", "phylum", "class", "order", "family")){
+
+}  
+  
+  obj1$data$tax_data %>%
+    select(taxon_id , kingdom, phylum, class, order, family, genus) %>%
+    column_to_rownames("taxon_id") %>%
+    as.matrix-> tax_tab
+  
+  data.frame(sample_ID = colnames(otu_tab)) %>%
+    mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]$")) %>%
+    column_to_rownames("sample_ID") -> sampledata
+  
+  physeq_obj = phyloseq(otu_table(otu_tab, taxa_are_rows = T), tax_table(tax_tab), sample_data(sampledata))
+  
+  ge = phyloseq_to_edgeR(physeq_obj, group="method")
+  et = exactTest(ge, pair=c("R1_B", "R2_B"))
+  # Extract values from test results
+  tt = topTags(et, n=nrow(dge$table), adjust.method="fdr", sort.by="PValue")
+  res = tt@.Data[[1]]
+  
+  pair_wise_taxa_df = cbind(pair_wise_taxa_df, res$FDR)
+}
 sigtab = res[(res$FDR < alpha), ]
 sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(physeq_obj)[rownames(sigtab), ], "matrix"))
    
@@ -677,7 +1240,7 @@ obj1$data$tax_data %>%
   mutate(diff_is = case_when(taxon_id %in% rownames(sigtabgen) ~ "signif",
                    !(taxon_id %in% rownames(sigtabgen)) ~ "NS"))%>%
   ggplot()+
-  geom_point(aes(taxon_id, diff_read, col = method))+
+  geom_point(aes(taxon_id, diff_read))+
   facet_wrap(~diff_is)
 
 ```
@@ -689,258 +1252,6 @@ A = 10 and B = 30 -> the FC of B with respect to A  is B/A, in this case it is
 (if the pair is c("A","B") then the comparison is B - A, so genes with positive 
 log-fold change are up-regulated in group B compared
 with group A (and vice versa for genes with negative log-fold change).)
-
-### Metabarcoding R1 vs R2 
-
-```{r}
-meta_g_b_decond_table_rare%>%
-  make.tax.tree.comp(method = c("R1_B","R2_B")) -> obj1
-
-
-obj1%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
-            node_size = R1_B+R2_B,
-            node_color = R1_B-R2_B,
-            node_color_range = c("blue", "gray", "red"),
-            node_color_interval = c(-max(abs(R1_B-R2_B)), max(abs(R1_B-R2_B))),
-            node_color_axis_label = "Standardized abudance \n difference across site (R1_B-R2_B)",
-            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
-            layout = "davidson-harel", initial_layout = "reingold-tilford")
-
-```
-  
-
-Here we see that in the phylum *Protobacteia* the class *Gammaprotobacteria* is mostly detected by R1 and  *Alphaprotobacteria* is mostly detected by R1.
-*Fimicutes* and *Actinobacteria* are better detected by R1
-
-#### Better version with statistical significance
-```{r}
-max(obj1$data$diff_table$log2_median_ratio)
-obj1$data$diff_table -> temp
-obj1%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = taxon_names,
-          node_size = n_obs, # number of OTUs
-          node_color = log2_median_ratio, # difference between groups
-          node_color_interval = c(-10, 10), # symmetric interval
-          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-          node_size_axis_label = "OTU count",
-          node_color_axis_label = "Log 2 ratio of median counts",
-          layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-obj1 %>%
-  mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
-  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
-  heat_tree(node_label = cleaned_names,
-            node_size = n_obs, # number of OTUs
-            node_color = log2_median_ratio, # difference between groups
-            node_color_interval = c(-10, 10), # symmetric interval
-            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-            node_size_axis_label = "OTU count",
-            node_color_axis_label = "Log 2 ratio of median counts",
-            layout = "da", initial_layout = "re", # good layout for large trees
-            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-obj1%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = taxon_names,
-          node_size = n_obs, # number of OTUs
-          node_color = median_diff, # difference between groups
-          node_color_interval = c(-max(abs(median_diff)), max(abs(median_diff))), # symmetric interval
-          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-          node_size_axis_label = "OTU count",
-          node_color_axis_label = "Median diff",
-          layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-```
-
-
-### Metagenomic R1 vs R2 
-
-```{r}
-meta_g_b_decond_table_rare%>%
-  make.tax.tree.comp(method = c("R1_G","R2_G")) -> obj2
-obj2%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
-            node_size = R1_G+R2_G,
-            node_color = R1_G-R2_G,
-            node_color_range = c("blue", "gray", "red"),
-            node_color_interval = c(-max(abs(R1_G-R2_G)), max(abs(R1_G-R2_G))),
-            node_color_axis_label = "Standardized abudance \n difference across site (R1_G-R2_G)",
-            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
-            layout = "davidson-harel", initial_layout = "reingold-tilford")
-
-```
-
-Different pattern for metaG than metaB here in phylum *Protobacteia* the class *Gammaprotobacteria* and *Alphaprotobacteria* are both more detected by R1.
-*Fimicutes* and *Actinobacteria* are also better detected by R1
-
-#### Better version with statistical significance
-```{r}
-
-obj2%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = taxon_names,
-          node_size = n_obs, # number of OTUs
-          node_color = log2_median_ratio, # difference between groups
-          node_color_interval = c(-10, 10), # symmetric interval
-          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-          node_size_axis_label = "OTU count",
-          node_color_axis_label = "Log 2 ratio of median counts",
-          layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-obj2 %>%
-  mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
-  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
-  heat_tree(node_label = cleaned_names,
-            node_size = n_obs, # number of OTUs
-            node_color = log2_median_ratio, # difference between groups
-            node_color_interval = c(-10, 10), # symmetric interval
-            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-            node_size_axis_label = "OTU count",
-            node_color_axis_label = "Log 2 ratio of median counts",
-            layout = "da", initial_layout = "re", # good layout for large trees
-            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-obj2%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = taxon_names,
-          node_size = n_obs, # number of OTUs
-          node_color = median_diff, # difference between groups
-          node_color_interval = c(-max(abs(median_diff)), max(abs(median_diff))), # symmetric interval
-          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-          node_size_axis_label = "OTU count",
-          node_color_axis_label = "Log 2 ratio of median counts",
-          layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-```
-### Metabarcoding R1 vs Metagenomic R1
-
-```{r}
-meta_g_b_decond_table_rare%>%
-  make.tax.tree.comp(method = c("R1_B","R1_G")) -> obj3
-
-obj3%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
-            node_size = R1_B+R1_G,
-            node_color = R1_B-R1_G,
-            node_color_range = c("blue", "gray", "red"),
-            node_color_interval = c(-max(abs(R1_B - R1_G)), max(abs(R1_B - R1_G))),
-            node_color_axis_label = "Standardized abudance \n difference across site (R1_B-R1_G)",
-            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
-            layout = "davidson-harel", initial_layout = "reingold-tilford")
-
-```
-
-#### Better version with statistical significance
-```{r}
-
-obj3%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = taxon_names,
-          node_size = n_obs, # number of OTUs
-          node_color = log2_median_ratio, # difference between groups
-          node_color_interval = c(-10,10), # symmetric interval
-          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-          node_size_axis_label = "OTU count",
-          node_color_axis_label = "Log 2 ratio of median counts",
-          layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-
-obj3 %>%
-  mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
-  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
-  heat_tree(node_label = cleaned_names,
-            node_size = n_obs, # number of OTUs
-            node_color = log2_median_ratio, # difference between groups
-            node_color_interval = c(-10, 10), # symmetric interval
-            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-            node_size_axis_label = "OTU count",
-            node_color_axis_label = "Log 2 ratio of median counts",
-            layout = "da", initial_layout = "re", # good layout for large trees
-            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-obj3%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = taxon_names,
-          node_size = n_obs, # number of OTUs
-          node_color = median_diff, # difference between groups
-          node_color_interval = c(-max(abs(median_diff)), max(abs(median_diff))), # symmetric interval
-          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-          node_size_axis_label = "OTU count",
-          node_color_axis_label = "Log 2 ratio of median counts",
-          layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-```
-
-### Metabarcoding R2 vs Metagenomic R2
-
-```{r}
-meta_g_b_decond_table_rare%>%
-  make.tax.tree.comp(method = c("R2_B","R2_G")) -> obj4
-
-obj4%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = gsub(pattern = "\\[|\\]", replacement = "", taxon_names),
-            node_size = R2_B+R2_G,
-            node_color = R2_B-R2_G,
-            node_color_range = c("blue", "gray", "red"),
-            node_color_interval = c(-max(abs(R2_B-R2_G)), max(abs(R2_B-R2_G))),
-            node_color_axis_label = "Standardized abudance \n difference across site (R2_B-R2_G)",
-            node_size_axis_label = "OTU abudance sum per taxon\n (standard hellinger)",
-            layout = "davidson-harel", initial_layout = "reingold-tilford")
-
-```
-#### Better version with statistical significance
-```{r}
-
-obj4%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = taxon_names,
-          node_size = n_obs, # number of OTUs
-          node_color = log2_median_ratio, # difference between groups
-          node_color_interval = c(-10, 10), # symmetric interval
-          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-          node_size_axis_label = "OTU count",
-          node_color_axis_label = "Log 2 ratio of median counts",
-          layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-
-obj4 %>%
-  mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
-  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
-  heat_tree(node_label = cleaned_names,
-            node_size = n_obs, # number of OTUs
-            node_color = log2_median_ratio, # difference between groups
-            node_color_interval = c(-10, 10), # symmetric interval
-            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-            node_size_axis_label = "OTU count",
-            node_color_axis_label = "Log 2 ratio of median counts",
-            layout = "da", initial_layout = "re", # good layout for large trees
-            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-
-obj4%>%
-  filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  heat_tree(node_label = taxon_names,
-          node_size = n_obs, # number of OTUs
-          node_color = median_diff, # difference between groups
-          node_color_interval = c(-max(abs(median_diff)), max(abs(median_diff))), # symmetric interval
-          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-          node_size_axis_label = "OTU count",
-          node_color_axis_label = "Log 2 ratio of median counts",
-          layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
-```
-
 
 ### Ralative abudances
 
