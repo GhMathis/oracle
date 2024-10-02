@@ -24,6 +24,10 @@ library(vegan) # Rarefaction
 library(ggrepel)
 library(metacoder)
 
+library(rjags)
+library(ggmcmc)
+library(coda)
+
 main_theme = theme_minimal()+
   theme(line = element_blank(), 
         axis.line = element_line(colour = "black"),
@@ -587,8 +591,8 @@ differential.analysis <- function(obj, pair){
   
     physeq_obj = phyloseq(otu_table(otu_tab, taxa_are_rows = T), tax_table(tax_tab), sample_data(sampledata))
   
-    ge = phyloseq_to_edgeR(physeq_obj, group="method")
-    et = exactTest(ge, pair=c(pair[2], pair[1]))
+    dge = phyloseq_to_edgeR(physeq_obj, group="method")
+    et = exactTest(dge, pair=c(pair[2], pair[1]))
     # Extract values from test results
     tt = topTags(et, n=nrow(dge$table), adjust.method="fdr", sort.by="PValue")
     res = tt@.Data[[1]]
@@ -699,18 +703,18 @@ obj1%>%
           layout = "davidson-harel", initial_layout = "reingold-tilford",
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 
-obj1 %>%
-  metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
-  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
-  metacoder::heat_tree(node_label = cleaned_names,
-            node_size = n_obs, # number of OTUs
-            node_color = log2_median_ratio, # difference between groups
-            node_color_interval = c(-10, 10), # symmetric interval
-            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-            node_size_axis_label = "OTU count",
-            node_color_axis_label = "Log 2 ratio of median counts",
-            layout = "da", initial_layout = "re", # good layout for large trees
-            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+# obj1 %>%
+#   metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
+#   metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
+#   metacoder::heat_tree(node_label = cleaned_names,
+#             node_size = n_obs, # number of OTUs
+#             node_color = log2_median_ratio, # difference between groups
+#             node_color_interval = c(-10, 10), # symmetric interval
+#             node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+#             node_size_axis_label = "OTU count",
+#             node_color_axis_label = "Log 2 ratio of median counts",
+#             layout = "da", initial_layout = "re", # good layout for large trees
+#             title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 
 obj1%>%
   metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
@@ -779,18 +783,18 @@ obj2%>%
           layout = "davidson-harel", initial_layout = "reingold-tilford",
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 
-obj2 %>%
-  metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
-  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
-  metacoder::heat_tree(node_label = cleaned_names,
-            node_size = n_obs, # number of OTUs
-            node_color = log2_median_ratio, # difference between groups
-            node_color_interval = c(-10, 10), # symmetric interval
-            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-            node_size_axis_label = "OTU count",
-            node_color_axis_label = "Log 2 ratio of median counts",
-            layout = "da", initial_layout = "re", # good layout for large trees
-            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+# obj2 %>%
+#   metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
+#   metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
+#   metacoder::heat_tree(node_label = cleaned_names,
+#             node_size = n_obs, # number of OTUs
+#             node_color = log2_median_ratio, # difference between groups
+#             node_color_interval = c(-10, 10), # symmetric interval
+#             node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+#             node_size_axis_label = "OTU count",
+#             node_color_axis_label = "Log 2 ratio of median counts",
+#             layout = "da", initial_layout = "re", # good layout for large trees
+#             title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 
 obj2%>%
   metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
@@ -809,7 +813,6 @@ obj2%>%
 #### Differential expression of replicated count data
 
 ```{r}
-obj2$data$
 obj2%>%
   metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
   metacoder::heat_tree(node_label = taxon_names,
@@ -858,18 +861,18 @@ obj3%>%
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 
 
-obj3 %>%
-  metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
-  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
-  metacoder::heat_tree(node_label = cleaned_names,
-            node_size = n_obs, # number of OTUs
-            node_color = log2_median_ratio, # difference between groups
-            node_color_interval = c(-10, 10), # symmetric interval
-            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-            node_size_axis_label = "OTU count",
-            node_color_axis_label = "Log 2 ratio of median counts",
-            layout = "da", initial_layout = "re", # good layout for large trees
-            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+# obj3 %>%
+#   metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
+#   metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
+#   metacoder::heat_tree(node_label = cleaned_names,
+#             node_size = n_obs, # number of OTUs
+#             node_color = log2_median_ratio, # difference between groups
+#             node_color_interval = c(-10, 10), # symmetric interval
+#             node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+#             node_size_axis_label = "OTU count",
+#             node_color_axis_label = "Log 2 ratio of median counts",
+#             layout = "da", initial_layout = "re", # good layout for large trees
+#             title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 
 obj3%>%
   metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
@@ -920,7 +923,9 @@ obj4%>%
             layout = "davidson-harel", initial_layout = "reingold-tilford")
 
 ```
+
 #### Better version with statistical significance
+
 ```{r}
 
 obj4%>%
@@ -936,18 +941,18 @@ obj4%>%
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 
 
-obj4 %>%
-  metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
-  metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
-  metacoder::heat_tree(node_label = cleaned_names,
-            node_size = n_obs, # number of OTUs
-            node_color = log2_median_ratio, # difference between groups
-            node_color_interval = c(-10, 10), # symmetric interval
-            node_color_range = c("cyan", "gray", "magenta"), # diverging colors
-            node_size_axis_label = "OTU count",
-            node_color_axis_label = "Log 2 ratio of median counts",
-            layout = "da", initial_layout = "re", # good layout for large trees
-            title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+# obj4 %>%
+#   metacoder::mutate_obs("cleaned_names", gsub(taxon_names, pattern = "\\[|\\]", replacement = "")) %>%
+#   metacoder::filter_taxa(grepl(cleaned_names, pattern = "^[a-zA-Z]+$")) %>%
+#   metacoder::heat_tree(node_label = cleaned_names,
+#             node_size = n_obs, # number of OTUs
+#             node_color = log2_median_ratio, # difference between groups
+#             node_color_interval = c(-10, 10), # symmetric interval
+#             node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+#             node_size_axis_label = "OTU count",
+#             node_color_axis_label = "Log 2 ratio of median counts",
+#             layout = "da", initial_layout = "re", # good layout for large trees
+#             title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 
 obj4%>%
   metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
@@ -1086,51 +1091,6 @@ For this data set the model is able to correct the biais cause by one method and
 For both data set we conclude the same thing, which is good. 
 
 
-
-
-```{r}
-make.tax.tree.comp = function(df,method){
-  df %>%
-  select(OTU, kingdom, phylum, class, order, family, genus, species, taxonomy, ends_with(method[1]), ends_with(method[2]))%>%
-  mutate(sum_col = rowSums(across(c(ends_with(method[1]), ends_with(method[2]))),na.rm = T))%>%
-  filter(sum_col != 0)%>%
-  ## standardization of the table produce by the "method 1" (first method put in the vector)
-  # mutate(across(ends_with(method[1]), ~ sqrt(. / rowSums(across(ends_with(method[1])))), .names = "hellinger_{col}"), 
-  ## standardization of the table produce by the "method 2" (second method put in the vector)    
-  #across(ends_with(method[2]), ~ sqrt(. / rowSums(across(ends_with(method[2])))), .names = "hellinger_{col}"),.keep = "unused")%>%
-  # remove species that don't appear in the 2 method that we compare in this chunk}}
-  mutate(total = rowSums(across(starts_with("BU")), na.rm = T))%>%
-  filter(total !=0 )%>%
-  # create metacoder object
-  metacoder::parse_tax_data(class_cols = "taxonomy", # The column in the input table
-                      class_sep = "; ",
-                      class_regex = "^([a-z]{0,1})_{0,2}(.*)$",
-                      class_key = c("tax_rank" = "taxon_rank", "name" = "taxon_name")) -> obj
-  obj$data$tax_data
-  # compute abudance (standadize by hellinger) per taxon for the 2 methode
-  obj$data$tax_abund <- metacoder::calc_taxon_abund(obj, "tax_data",
-                                       cols = startsWith(colnames(obj$data$tax_data),"BU"))
-  
-  obj$data$tax_abund_group <- metacoder::calc_taxon_abund(obj, "tax_data",
-                                       cols = startsWith(colnames(obj$data$tax_data),"BU"),
-                                                         groups = str_extract(str_subset(colnames(obj$data$tax_data), "_R\\d_[A-Z+]"), "R\\d_[A-Z+]"))
-  obj$data$diff_table = metacoder::compare_groups(obj, "tax_abund",
-                                       cols = startsWith(colnames(obj$data$tax_abund),"BU"),
-                                                         groups = str_extract(str_subset(colnames(obj$data$tax_abund), "_R\\d_[A-Z+]"), "R\\d_[A-Z+]"))
-  obj = mutate_obs(obj, "diff_table",
-                  wilcox_p_value = p.adjust(wilcox_p_value, method = "fdr"))
-  # Ns. set to 0
-  obj$data$diff_table%>%
-    mutate(median_diff = case_when(wilcox_p_value > 0.05 ~ 0,
-                      .default  = median_diff),
-           log2_median_ratio = case_when(wilcox_p_value > 0.05 ~ 0,
-                      .default  = median_diff)) -> obj$data$diff_table
-
-  return(obj)
-}
-```
-
-
 ```{r}
   # differential analysis of sequence read count data with edgeR
   #obj$data$tax_data %>%
@@ -1210,7 +1170,8 @@ obj1$data$tax_data %>%
   
   pair_wise_taxa_df = cbind(pair_wise_taxa_df, res$FDR)
 }
-sigtab = res[(res$FDR < alpha), ]
+
+sigtab = res[(res$FDR < alpha),]
 sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(physeq_obj)[rownames(sigtab), ], "matrix"))
    
 theme_set(theme_bw())
@@ -1244,6 +1205,7 @@ obj1$data$tax_data %>%
   facet_wrap(~diff_is)
 
 ```
+
 FC is for fold change which is a ratio between 2 quantities. For exemple :
 A = 10 and B = 30 -> the FC of B with respect to A  is B/A, in this case it is
 60/30 = 2 ; it is defined as a fold-change of 3
@@ -1253,37 +1215,827 @@ A = 10 and B = 30 -> the FC of B with respect to A  is B/A, in this case it is
 log-fold change are up-regulated in group B compared
 with group A (and vice versa for genes with negative log-fold change).)
 
-### Ralative abudances
+
+## Bayesian model with zero inflation
 
 ```{r}
-meta_g_b_decond_table_rare%>%
-  pivot_longer(starts_with("BU"), names_to = "ID", values_to = "abundance")%>%
-  mutate(method = str_extract(ID, "R\\d+_[BG]"),
-         soil_code = str_extract(ID, "^BU_[A-Z]+_\\d+"))%>%
-  group_by(ID)%>%
-  mutate(relative_abudance = abundance/sum(abundance))%>%
-  ggplot()+
-  facet_wrap(~soil_code)+
-  geom_col(aes(method,relative_abudance  ,fill = order))+
-  main_theme+
-  theme(legend.position="none",
-        axis.text.x =element_text(angle = 90,vjust = 1, hjust = 1, size = 6, face="italic"))
 
-meta_g_b_decond_table_rare%>%
-  pivot_longer(starts_with("BU"), names_to = "ID", values_to = "abundance")%>%
-  mutate(method = str_extract(ID, "R\\d+_[BG]"),
-         soil_code = str_extract(ID, "^BU_[A-Z]+_\\d+"))%>%
-  group_by(ID)%>%
-  mutate(relative_abudance = abundance/sum(abundance))%>%
-  ungroup()%>%
-  group_by(order, method)%>%
-  summarise(relative_abudance_mean = mean(relative_abudance))%>%
-  ggplot()+
-  #facet_wrap(~order)+
-  geom_raster(aes(method,order, fill = relative_abudance_mean))+
-  main_theme+
-  theme(legend.position="none",
-        axis.text.x =element_text(angle = 90,vjust = 1, hjust = 1, size = 6, face="italic"))
+differential.analysis.Zif <- function(obj = obj3, pair,
+                                        nrAdapt=1000,
+                                        nrBurnIn=1000,
+                                        nrSamples=1000,
+                                        nrThin = 3){
+  ## Setup dataa out of metacoder object
+  # Extract taxon rank associated to each Metacoder taxon_id
+  rank_df = data.frame(taxon_rank = sapply(names(obj$taxa), function(x) obj$taxa[[x]]$rank$name)) %>%
+  rownames_to_column("taxon_id")
   
+  # Join taxon rank and taxon total abundances data frame
+  rank_df %>%
+    left_join(obj$data$tax_abund, by = "taxon_id" ) %>%
+  tibble -> tax_abund
+  
+  # Create sample data (data frame that indicate sample's condition/method belonging)
+  data.frame(sample_ID = colnames(tax_abund %>%
+                                    select(starts_with("BU")))) %>%
+      mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]$")) %>%
+      column_to_rownames("sample_ID") -> sampledata
+  ##
+  groups <- c(79,79) #Indicates the size of each group samples
+
+  group = c(rep(0,groups[1]),rep(1,groups[2])) 
+  # indicator vector indicating which samples
+  # belong to which group. Note this implementation requires
+  # the two groups to be in consecutive order
+  
+
+  #MCMC run settings
+
+  
+  # Initialize output dataframe
+  pair_wise_taxa_df = data.frame()
+
+  for(t_rank in c("k", "p", "c", "o", "f", "g")){
+       #add pseudo counts to any gene with zeros in one group
+    tax_abund %>%
+    filter(taxon_rank == t_rank) %>%
+    select(starts_with("BU"), taxon_id) %>%
+    column_to_rownames("taxon_id") %>%
+    as.matrix -> Y
+    
+    pseudoCounts <- 0
+    for (i in 1:dim(Y)[1]){
+      
+      if(sum(Y[i,1:groups[1]])==0) {
+        Y[i,sample(1:groups[1],size=1)] <- 1
+        pseudoCounts = pseudoCounts + 1
+      }
+      if(sum(Y[i,(1+groups[1]):(groups[2]+groups[1])])==0) {
+        Y[i,sample((1+groups[1]):(groups[2]+groups[1]),size=1)] <- 1
+        
+        pseudoCounts = pseudoCounts +1
+      }
+    }
+    
+  D = dim(Y)
+  data_list = list(
+    Y = Y,
+    D = D,
+    N = colSums(Y)/median(colSums(Y)),
+    c = 1000,
+    groups = c(D[2]/2,D[2]/2)
+  )
+
+  init_list <- list(
+    alpha1 = rnorm(D[1]),
+    alpha2 = rnorm(D[1]),
+    p = runif(n = D[1], min = 0, max = 1),
+    binVar =  runif( D[1],0.05,0.1),
+    phi = matrix(rnorm(D[1]*D[2]), ncol = D[2], nrow = D[1]),
+    pi = Y*0,
+    kappa = 1,
+    eta = 1
+  )
+
+  model2 <- jags.model("code/Zicompar.jags",data = data_list,inits = init_list, n.chains = 1,n.adapt = nrAdapt)
+  update(model2,n.iter=nrBurnIn)
+  post_sample2 <- coda.samples(model2,c("alpha1", "alpha2", "alpha3"),n.iter = nrSamples,thin=nrThin)
+  summary(post_sample2) -> quantile_summary
+    
+  quantile_summary$quantiles %>%
+  data.frame() %>%
+  rownames_to_column("Parameter") %>%
+  filter(startsWith(Parameter, "alpha3"))%>%
+  mutate(signif = case_when(
+    sign(X2.5.) != sign(X97.5.) ~ "NS",
+    sign(X2.5.) == sign(X97.5.) ~ "sign"
+  )) %>%
+  select(X2.5., signif, X50.) -> resultdf
+
+
+  rownames(resultdf) = rownames(Y)
+  
+  pair_wise_taxa_df %>%
+    bind_rows(resultdf)%>%
+    tibble() -> pair_wise_taxa_df
+  }
+
+  return(pair_wise_taxa_df)
+}
+
+table(pair_wise_taxa_df$signif )
+table(obj3$data$diff_analysis_table$PValue>0.05)
+obj3$data$diff_analysis_table$taxon_id[1:1434]
+obj3$data$diff_analysis_table_zif <- pair_wise_taxa_df
+obj3$data$diff_analysis_table_zif$taxon_id <- obj3$data$diff_analysis_table$taxon_id[1:1434]
+obj3$data$diff_analysis_table_zif%>%
+  mutate(X50. = case_when(signif == "NS" ~ 0,
+                    .default  = X50. )) -> obj3$data$diff_analysis_table_zif
+
+obj3%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = X50. , # difference between groups
+          node_color_interval = c(-max(abs(X50.)), max(abs(X50.))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+obj3%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC  , # difference between groups
+          node_color_interval = c(-max(abs(logFC  )), max(abs(logFC  ))), # symmetric interval
+          node_color_range = c("cyan", "gray", "magenta"), # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+postSamples_df <-  post_sample2 %>% ggs()
+postSamples_df%>%
+  mutate(group = str_extract(Parameter, "alpha\\d"),
+         taxa_id = str_extract(Parameter,"(alpha\\d)\\[(\\d+)\\]", group = 2))%>%
+  select(-Parameter)%>%
+  pivot_wider(values_from = value, names_from = group)%>%
+  #mutate(alpha_diff = alpha1 - alpha2)%>%
+  pivot_longer(starts_with("alpha"), names_to = "Parameter", values_to ="value" )-> postSamples_df
+postSamples_df%>%
+  filter(taxa_id == 7)%>%
+  ggplot() +
+  facet_wrap(~Parameter)+
+  geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
+
+postSamples_df%>%
+  filter(taxa_id %in% 1:10)%>%
+  ggplot() +
+  facet_wrap(~taxa_id)+
+  geom_density(aes(value, fill = Parameter), alpha = 0.3)+
+  scale_fill_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))+
+  main_theme
 ```
+
+### Fist estimate mean abudance per OTU supposing a poisson distribution
+
+```{r}
+set.seed(1000)
+n_sample = 20
+n_taxa = 10 
+alpha = rnorm(n_taxa,log(20)) # True abundance mean
+
+p = rep(0.8, n_taxa) # probability of presence
+pi_ = matrix(rbinom(n_taxa*n_sample,1,p ),nrow = n_taxa, ncol = n_sample)
+rowSums(pi_)/100 #should be around 0.8
+
+sigma = round(rgamma(n_taxa, 2,2),2) # taxa specific over-dispersion parameter
+u = matrix(rnorm(n_taxa*n_sample, 0, sigma), nrow = n_taxa, ncol = n_sample) # taxa- and sample-specific random effect
+
+beta = c(rep(log(0.25), 4), rep(log(1),2), rep(log(4), 4)) # scaling detection factor between group for each taxa
+group = c(rep(0,n_sample/2),rep(1,n_sample/2))
+
+lambda = matrix(NA,nrow = n_taxa, ncol = n_sample)
+Y = matrix(NA,nrow = n_taxa, ncol = n_sample)
+for (t in 1:n_taxa){
+  for(s in 1:n_sample){
+  
+  lambda[t,s] =  exp(alpha[t] + group[s]*beta[t])*pi_[t,s]
+  Y[t,s] = rpois(1, lambda[t,s])
+  }
+}
+hist(Y, breaks = 40)
+
+```
+
+# basic model of comparison
+```{r}
+nrAdapt=1000
+nrBurnIn=1000
+nrSamples=1000
+nrThin = 1
+
+modelName1 <- "model{
+  for (i in 1:D[1]) {    # For each OTU
+  		for (j in 1:group[1]){ # I both group we test
+  			Y[i,j] ~ dpois(exp(alpha[i]))
+  		}
+  	  	  
+      for (j in (group[1]+1):(group[1]+group[2])){
+  			Y[i,j] ~ dpois(exp(alpha[i] + beta[i])) 
+      }
+      
+  		alpha[i] ~ dnorm(0,0.01) # OTU specific true abundance
+  		beta[i] ~ dnorm(0,0.01) # OTU diff abundance in grp 2 compaire to grp 1
+
+  }}"
+
+# basic model that estimate the 
+data_list = list(
+  Y = Y,
+  D = dim(Y),
+  group = c(10,10)
+)
+
+init_list <- list(
+  alpha = rnorm(n_taxa),
+  beta = rnorm(n_taxa)
+)
+
+
+#MCMC run settings
+
+
+model1 <- jags.model(textConnection(modelName1),data = data_list,inits = init_list, n.chains = 1,n.adapt = nrAdapt)
+update(model1,n.iter=nrBurnIn)
+post_sample1 <- coda.samples(model1,c("alpha", "beta"),n.iter = nrSamples,thin=nrThin)
+
+summary(post_sample1) -> quantile_summary1
+postSamples_df1 <-  post_sample1 %>% ggs()
+true_val = data.frame(true_val = c(alpha,beta), group = c(rep("alpha",10),rep("beta",10)),taxa_id = as.character(rep(1:10,2) ))
+postSamples_df1%>%
+  mutate(group = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 1),
+         taxa_id = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 2))-> postSamples_df1
+
+postSamples_df1%>%
+  filter(taxa_id == 1)%>%
+  ggplot() +
+  facet_wrap(~Parameter)+
+  geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
+
+postSamples_df1%>%
+  left_join(true_val, by = join_by(group,taxa_id))%>%
+  filter(group == "beta")%>%
+  ggplot() +
+  facet_wrap(~taxa_id)+
+  geom_density(aes(value), alpha = 0.3)+
+  geom_vline(aes(xintercept = true_val), cex = 2)+
+  main_theme
+
+rowMeans(Y)%>%log
+quantile_summary1$statistics[11:20,1] %>%exp
+```
+True abundance mean and group abudance differences aren't well estimated with this model. This is because the model doesn't account for inflated zero in data.
+To account for this I will add a probability of observing each taxa in each samples with Bernoulli distribution
+
+
+```{r}
+modelName2 <-"model{
+  for (i in 1:D[1]) {    # For each OTU
+  		for (j in 1:group[1]){ # I both group we test
+  			Y[i,j] ~ dpois(exp(alpha[i] - 1000* pi[i,j]))
+  				pi[i,j] ~ dbern(p[i]) # zero inflation
+  		}
+  	  	  
+      for (j in (group[1]+1):(group[1]+group[2])){
+  			Y[i,j] ~ dpois(exp(alpha[i] + beta[i] - 1000* pi[i,j])) 
+  				pi[i,j] ~ dbern(p[i]) # zero inflation
+      }
+      
+  		alpha[i] ~ dnorm(0,0.01) # OTU specific true abundance
+  		beta[i] ~ dnorm(0,0.01) # OTU diff abundance in grp 2 compaire to grp 1
+  		
+      p[i] ~ dbeta(1,1) # Zero infaltion parameter specific to OTU (with beta prior distrib)
+  }
+}"
+
+# basic model that estimate the 
+
+data_list = list(
+  Y = Y,
+  D = dim(Y),
+  group = c(10,10)
+)
+
+init_list <- list(
+  alpha = rnorm(n_taxa),
+  beta = rnorm(n_taxa),
+  p =  runif(n_taxa,0,1),
+  pi = Y * 0
+)
+
+#MCMC run settings
+
+model2 <- jags.model(textConnection(modelName2),data = data_list,inits = init_list, n.chains = 1,n.adapt = nrAdapt)
+update(model2,n.iter=nrBurnIn)
+post_sample2 <- coda.samples(model2,c("alpha", "beta"),n.iter = nrSamples,thin=nrThin)
+coda.samples(model2,c("p"),n.iter = nrSamples,thin=nrThin)%>%summary
+
+summary(post_sample2) -> quantile_summary2
+postSamples_df2 <-  post_sample2 %>% ggs()
+postSamples_df2%>%
+  mutate(group = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 1),
+         taxa_id = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 2))-> postSamples_df2
+
+postSamples_df2%>%
+  filter(taxa_id == 7)%>%
+  ggplot() +
+  facet_wrap(~Parameter, scale = "free")+
+  geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
+true_val = data.frame(true_val = c(alpha,beta,p), group = c(rep("alpha",10),rep("beta",10),rep("p",10)),taxa_id = as.character(rep(1:10,3) ))
+
+postSamples_df2%>%
+  left_join(true_val, by = join_by(group,taxa_id))%>%
+  ggplot() +
+  facet_wrap(~taxa_id,)+
+  geom_density(aes(value, fill = group), alpha = 0.3)+
+  geom_vline(aes(xintercept = true_val, col = group), cex = 2)+
+  scale_fill_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
+  main_theme
+```
+
+
+```{r}
+modelName3 <- "
+model{
+  for (i in 1:D[1]) {    # For each OTU
+  		for (j in 1:group[1]){ # I both group we test
+  			Y[i,j] ~ dpois(exp(alpha[i] + log(N[j]) - pi[i,j]*c))
+  			pi[i,j] ~ dbern(p[i]) # zero inflation
+  		}
+  	  	  
+      for (j in (group[1]+1):(group[1]+group[2])){
+  			Y[i,j] ~ dpois(exp(alpha[i] + beta[i] + log(N[j]) - pi[i,j]*c))
+  			pi[i,j] ~ dbern(p[i]) # zero inflation
+      }
+      
+  		alpha[i] ~ dnorm(0,0.01) # OTU specific true abundance
+  		
+  		beta[i] ~ dnorm(0,0.01) # OTU diff abundance in grp 2 compaire to grp 1
+  		
+  		p[i] ~ dbeta(0.2,1.5) # Zero infaltion parameter specific to OTU (with beta prior distrib)
+
+  }
+}"
+
+# basic model that estimate the 
+data_list = list(
+  Y = Y,
+  D = dim(Y),
+  group = c(50,50),
+  N = colSums(Y)/median(colSums(Y)),
+  c = 1000 # constant use to "activate" zero inflation in the model
+)
+
+init_list <- list(
+  alpha = runif(n_taxa,2,4),
+  beta = runif(n_taxa,-1,1),
+  p = runif(n_taxa),
+  pi = Y * 0
+)
+
+
+#MCMC run settings
+
+
+model3 <- jags.model(textConnection(modelName3),data = data_list,inits = init_list, n.chains = 1,n.adapt = nrAdapt)
+
+update(model3,n.iter=nrBurnIn)
+post_sample3 <- coda.samples(model3,c("alpha", "beta"),n.iter = nrSamples,thin=nrThin)
+
+summary(post_sample3) -> quantile_summary3
+postSamples_df3 <-  post_sample3 %>% ggs()
+postSamples_df3%>%
+  mutate(group = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 1),
+         taxa_id = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 2))-> postSamples_df3
+
+postSamples_df3%>%
+  filter(taxa_id == 8)%>%
+  ggplot() +
+  facet_wrap(~Parameter)+
+  geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
+
+postSamples_df3%>%
+  ggplot() +
+  facet_wrap(~taxa_id)+
+  geom_density(aes(value, fill = group), alpha = 0.3)+
+  scale_fill_manual(values = wesanderson::wes_palette("FantasticFox1", n = 2))+
+  main_theme
+
+exp(quantile_summary3$statistics[1:10,1]) - exp(alpha) 
+exp(quantile_summary3$statistics[11:20,1]) - exp(beta) 
+
+```
+
+
+
+```{r}
+
+Y <- meta_g_b_decond_table_rare%>%
+   select(ends_with("R1_G"), ends_with("R1_B"))
+
+Y <- Y[1:200,c(1:10, 80:89)]
+
+modelName <- "model {
+	
+  for (i in 1:D[1]) {    # For each OTU
+    for(j in 1:D[2]){
+  		Y[i,j] ~ dpois(lambda[i])
+  		
+      }
+  	 lambda[i] ~ dunif(0,1000) 
+	 }
+}"
+# basic model that estimate the 
+data_list = list(
+  Y = Y,
+  D = dim(Y)
+)
+
+init_list <- list(
+  lambda=rep(10, nrow(Y))
+)
+
+
+#MCMC run settings
+nrAdapt=1000
+nrBurnIn=1000
+nrSamples=1000
+nrThin = 1
+
+model1 <- jags.model(textConnection(modelName),data = data_list,inits = init_list, n.chains = 1,n.adapt = nrAdapt)
+str(post_sample)
+post_sample <- coda.samples(model1,c("lambda"),n.iter = nrSamples,thin=nrThin)
+
+postSamples_df <-  post_sample %>% ggs()
+postSamples_df
+postSamples_df%>%
+  filter(Parameter %in% c("lambda[1]", "lambda[2]"))%>%
+  ggplot() +
+  facet_wrap(~Parameter)+
+  geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
+
+postSamples_df%>%
+  group_by(Parameter)%>%
+  summarise(mean_value = mean(value))%>%
+  ggplot()+
+  geom_histogram(aes(mean_value))
+```
+
+
+### comparing mean abudance per OTU per group assuming poisson distibution
+```{r}
+modelName <- "model {
+	
+	#grp 1
+	 for (i in 1:D[1]) {
+	  for (j in 1:(group[1])){
+  	  Y[i,j] ~ dpois(lambda[i])
+    }
+	#grp 2
+  for (j in (group[1]+1):(group[1]+group[2])){
+
+  	  Y[i,j] ~ dpois(lambda[i]+beta[i])
+    }
+  lambda[i] ~ dunif(0,1000)
+  beta[i] ~ dnorm(0,0.01)
+	}
+}"
+# basic model that estimate the 
+data_list = list(
+  Y = Y,
+  D = dim(Y),
+  group= c(10,10)
+)
+
+init_list <- list(
+  lambda = rep(10, nrow(Y)),
+  beta = rep(0, nrow(Y))
+)
+
+
+#MCMC run settings
+nrAdapt=1000
+nrBurnIn=1000
+nrSamples=1000
+nrThin = 1
+
+model1 <- jags.model(textConnection(modelName),data = data_list,inits = init_list, n.chains = 1,n.adapt = nrAdapt)
+str(post_sample)
+post_sample <- coda.samples(model1,c("lambda", "beta"),n.iter = nrSamples,thin=nrThin)
+
+postSamples_df <-  post_sample %>% ggs()
+postSamples_df%>%
+  filter(Parameter %in% c("beta[1]", "beta[2]"))%>%
+  ggplot() +
+  facet_wrap(~Parameter)+
+  geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
+postSamples_df%>%
+  group_by(Parameter)%>%
+  summarise(mean_value = mean(value))%>%
+  filter(str_detect(Parameter, "beta"))%>%
+  ggplot()+
+  geom_histogram(aes(mean_value))
+
+```
+
+```{r}
+
+
+
+ZiMGLMMLoan <- function(Y,group,N,nR=dim(Y)[1],nrAdapt=1000,
+                             nrBurnIn=1000, nrSamples=10000, nrThin = 1,
+                             modelName = "code/ZiGLMM.jags",
+                             returnBeta1=FALSE,nRchains=1) {
+  
+  #Takes a matrix as input a long with group definitions and normalizing constants
+  #runs MetaBayes and returns a vector of pvalues.
+  
+  
+  nC <- sum(groups)
+  
+  groups <- c(sum(group==0),sum(group==1))
+  
+  nrColumns <- dim(Y)[2]
+  nrRows <- dim(Y)[1]
+  
+  
+  ###Obs out of habit the median of the total sums are used.
+  normalizingConstants <- N/median(N)
+  
+  #DATA FOR MCMC OBJECT
+  
+  dataL <- list(Y=Y,N = normalizingConstants,group=groups)
+  
+  #INITS FOR MCMC OBJECT
+  
+  initsL1 <- ZiGLMMloaninits(Y=Y,n.chain = nRchains)
+  
+  
+  ## GAMMA MODEL
+  
+  
+  
+  model1 <- jags.model(modelName,data = dataL,inits = initsL1, n.chains = 1,n.adapt = nrAdapt)
+  bf <- proc.time()
+  update(model1,n.iter=nrBurnIn)
+  
+  model1$rawData <- Y
+  
+  
+  
+  model1$samples <- coda.samples(model1,c("beta","p"),n.iter = nrSamples,thin=nrThin)
+  
+  
+  
+  
+  
+  #significance score calculation for ZiGLMM
+  
+  tempMatrix <- as.matrix(model1$samples[,1:nrRows])
+  
+  
+  
+  betaMeans <- apply(tempMatrix,2,mean)
+  betaSds <- apply(tempMatrix,2,sd)
+  
+  betaProbUpper <- pnorm(0,betaMeans,betaSds)
+  betaProbLower <- pnorm(0,betaMeans,betaSds,lower.tail=FALSE)
+  
+  betaProbMatrix <- cbind(betaProbUpper,betaProbLower)
+  
+  betaProb <- apply(betaProbMatrix,1,min)*2
+  
+  tempMatrix2 <- as.matrix(model1$samples[,(nrRows+1):(2*nrRows)])
+  pMeans <- apply(tempMatrix2,2,mean)
+  
+
+  
+  if(returnBeta1) {
+    return(data.frame(betaProb = betaProb, betaMeans = betaMeans, betaSds = betaSds,pMeans = pMeans))
+  } else {
+    return(betaProb)
+  }
+  
+  
+}
+
+
+
+ZiGLMMloaninits <- function(Y,n.chain = 1){
+  nR = dim(Y)[1]
+  Y <- as.matrix(Y)
+  if (n.chain == 1) {
+    
+    alpha <- log(apply(Y,1,mean))
+    beta <- runif(nR,-0.2,0.2)
+
+    kappa <- 1
+    eta <- 1
+    binVar <- runif(nR,0.05,0.1)
+    phi <- alpha + (log(Y+0.1)-alpha)
+    p <- rep(0,nR)
+    pi <- Y*0
+    
+
+    
+    return(list(alpha = alpha,beta=beta,phi=phi,binVar = binVar,
+                kappa=kappa, eta=eta,p=p,pi=pi))
+  } else {
+    initList <- list()
+    for (i in 1:n.chain) {
+      alpha <- log(apply(Y,1,mean))
+      beta <- runif(nR,-0.2,0.2)
+      
+      
+      kappa <- 1
+      eta <- 1
+      binVar <- runif(nR,0.05,0.1)
+      phi <- alpha + (log(Y+0.1)-alpha)
+      p <- rep(0,nR)
+      pi <- Y*0
+      
+
+      
+      initList[[i]] <- list(alpha = alpha,beta=beta,phi=phi,binVar = binVar,
+                            kappa=kappa, eta=eta,p=p,pi=pi)
+    }
+    return(initList)
+    
+  }
+  
+}
+
+
+```
+
+```{r}
+
+Y <- meta_g_b_decond_table_rare%>%
+   select(ends_with("R1_G"), ends_with("R1_B"))
+#Note this is just an example that uses a small part
+# of the Yatsunenko 2012 dataset to get a rapidly runnable test case.
+Y <- Y[1:200,c(1:10, 80:89)] 
+groups <- c(10,10) #Indicates the size of each group samples
+
+group=c(rep(0,groups[1]),rep(1,groups[2])) 
+# indicator vector indicating which samples
+# belong to which group. Note this implementation requires
+# the two groups to be in consecutive order
+
+#add pseudo counts to any gene with zeros in one group
+pseudoCounts <- 0
+for (i in 1:dim(Y)[1]){
+  
+  if(sum(Y[i,1:groups[1]])==0) {
+    Y[i,sample(1:groups[1],size=1)] <- 1
+    pseudoCounts = pseudoCounts + 1
+  }
+  if(sum(Y[i,(1+groups[1]):(groups[2]+groups[1])])==0) {
+    Y[i,sample((1+groups[1]):(groups[2]+groups[1]),size=1)] <- 1
+    
+    pseudoCounts = pseudoCounts +1
+  }
+}
+
+normalizingConstants <- colSums(Y) #Uses total counts per sample
+                                   #as normalization (with 0 as 1)
+
+#MCMC run settings
+nrAdapt=1000
+nrBurnIn=1000
+nrSamples=1000
+nrThin = 1
+
+nC <- sum(groups)
+
+nrColumns <- dim(Y)[2]
+nrRows <- dim(Y)[1]
+
+### Obs out of habit the median of the total sums are used.
+normalizingConstants <- normalizingConstants/median(normalizingConstants)
+
+#DATA FOR MCMC OBJECT
+
+dataL <- list(Y=Y,N = normalizingConstants,group=groups)
+
+#INITS FOR MCMC OBJECT
+
+initsL1 <- ZiGLMMloaninits(Y=Y,n.chain = nRchains)
+
+
+## GAMMA MODEL
+
+
+
+model1 <- jags.model("code/ZiGLMM.jags",data = dataL,inits = initsL1, n.chains = 1,n.adapt = nrAdapt)
+bf <- proc.time()
+update(model1,n.iter=nrBurnIn)
+
+model1$rawData <- Y
+
+
+
+model1$samples <- coda.samples(model1,c("beta","p"),n.iter = nrSamples,thin=nrThin)
+
+str(model1$samples)
+
+
+#significance score calculation for ZiGLMM
+
+tempMatrix <- as.matrix(model1$samples[,1:nrRows])
+
+
+
+betaMeans <- apply(tempMatrix,2,mean)
+betaSds <- apply(tempMatrix,2,sd)
+
+betaProbUpper <- pnorm(0,betaMeans,betaSds)
+betaProbLower <- pnorm(0,betaMeans,betaSds,lower.tail=FALSE)
+
+betaProbMatrix <- cbind(betaProbUpper,betaProbLower)
+
+betaProb <- apply(betaProbMatrix,1,min)*2
+
+tempMatrix2 <- as.matrix(model1$samples[,(nrRows+1):(2*nrRows)])
+pMeans <- apply(tempMatrix2,2,mean)
+
+
+
+if(returnBeta1) {
+  return(list(betaProb,betaMeans,betaSds,pMeans))
+} else {
+ # return(betaProb)
+}
+  
+
+```
+
+
+```{r}
+
+#Initialize required packages
+
+
+
+#Prepare data
+
+#LoadData from file
+
+Y <- meta_g_b_decond_table_rare%>%
+   select(ends_with("R1_G"), ends_with("R1_B"))
+#Note this is just an example that uses a small part
+# of the Yatsunenko 2012 dataset to get a rapidly runnable test case.
+Y <- Y[1:200,] 
+groups <- c(79,79) #Indicates the size of each group samples
+
+group=c(rep(0,groups[1]),rep(1,groups[2])) 
+# indicator vector indicating which samples
+# belong to which group. Note this implementation requires
+# the two groups to be in consecutive order
+
+#add pseudo counts to any gene with zeros in one group
+pseudoCounts <- 0
+for (i in 1:dim(Y)[1]){
+  
+  if(sum(Y[i,1:groups[1]])==0) {
+    Y[i,sample(1:groups[1],size=1)] <- 1
+    pseudoCounts = pseudoCounts + 1
+  }
+  if(sum(Y[i,(1+groups[1]):(groups[2]+groups[1])])==0) {
+    Y[i,sample((1+groups[1]):(groups[2]+groups[1]),size=1)] <- 1
+    
+    pseudoCounts = pseudoCounts +1
+  }
+}
+
+
+
+
+
+normalizingConstants <- colSums(Y) #Uses total counts per sample
+                                   #as normalization
+
+#MCMC run settings
+nrAdapt=1000
+nrBurnIn=1000
+nrSamples=1000
+nrThin = 1
+
+#runs the mcmc for the selected settings and returns the significance score,
+#fold change and zero inflation parameter for each feature
+resultdf <- ZiMGLMMLoan(Y=Y,group = group, N = normalizingConstants,
+                          nrAdapt=nrAdapt,nrBurnIn=nrBurnIn,nrSamples=nrSamples,
+                          nrThin=nrThin,returnBeta=TRUE)
+sigScore <- resultList[[1]]
+foldChange <- resultList[[2]]
+zeroInf <- resultList[[3]]
+resOrder <- order(sigScore)
+
+
+#export results
+resultMat<-cbind(rownames(Y),sigScore,foldChange,zeroInf) 
+resultMatOrdered<-cbind(rownames(Y)[resOrder],sigScore[resOrder],foldChange[resOrder],zeroInf[resOrder]) 
+
+```
+
+
 

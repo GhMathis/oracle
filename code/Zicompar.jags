@@ -1,0 +1,29 @@
+model {
+	
+  for (i in 1:D[1]){    # For each OTU
+		for (j in 1:groups[1]){ 
+			Y[i,j] ~ dpois(exp(phi[i,j]+log(N[j]) -pi[i,j]*c)) 
+			phi[i,j] ~ dnorm(alpha1[i] , binTau[i]) # random effect
+			pi[i,j] ~ dbern(p[i]) # zero inflation
+		}
+	  	  	
+	  for (j in (groups[1]+1 ):(groups[2]+groups[1])){ 
+			Y[i,j] ~ dpois(exp(phi[i,j]+log(N[j]) -pi[i,j]*c)) 
+			phi[i,j] ~ dnorm(alpha2[i] , binTau[i]) # random effect
+			pi[i,j] ~ dbern(p[i]) # zero inflation
+	  }
+	  
+		binVar[i] ~ dgamma(kappa,eta) T(0,10000)	# Gamma distribution on variance
+		
+		binTau[i] <- 1/binVar[i]
+		alpha1[i] ~ dnorm(0,0.01) # OTU specific abundance (grp1)
+		alpha2[i] ~ dnorm(0,0.01) # OTU specific abundance (grp2)
+		#beta[i] ~ dnorm(0,0.01) # OTU sepcific difference 
+		
+		#Same as qin2010
+		p[i] ~ dbeta(0.2,1.5) # Zero infaltion parameter specific to OTU (with beta prior distrib)
+	    }
+	alpha3 <- alpha1 - alpha2
+	kappa ~ dunif(0,50) 
+	eta ~ dunif(0,1000) 
+	}
