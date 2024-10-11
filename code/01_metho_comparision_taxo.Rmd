@@ -770,7 +770,7 @@ Different pattern for metaG than metaB here in phylum *Protobacteia* the class *
 
 #### Better version with statistical significance
 ```{r}
-
+obj2$data$diff_table
 obj2%>%
   metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
   metacoder::heat_tree(node_label = taxon_names,
@@ -853,7 +853,7 @@ obj3%>%
   metacoder::heat_tree(node_label = taxon_names,
           node_size = n_obs, # number of OTUs
           node_color = log2_median_ratio, # difference between groups
-          node_color_interval = c(-10,10), # symmetric interval
+          node_color_interval =  c(-max(abs(log2_median_ratio)), max(abs(log2_median_ratio))), # symmetric interval
           node_color_range = c("cyan", "gray", "magenta"), # diverging colors
           node_size_axis_label = "OTU count",
           node_color_axis_label = "Log 2 ratio of median counts",
@@ -984,7 +984,7 @@ obj4%>%
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
 ```
 
-Zero inflantion might bias the variance of taxa abudance in each method thus scaling factors are maybeunderestimated 
+Zero inflantion might bias the variance of taxa abudance in each method thus scaling factors are maybe under estimated 
 
 ## differencial expression analysis
 ## Phyloseq
@@ -1048,7 +1048,7 @@ sigtabgen_test$family = factor(as.character(sigtabgen_test$family), levels = nam
 # Genus order
 x = tapply(sigtabgen_test$logFC, sigtabgen_test$genus, function(x) max(x))
 x = sort(x, TRUE)
-sigtabgen$Genus = factor(as.character(sigtabgen_test$genus), levels = names(x))
+sigtabgen_test$Genus = factor(as.character(sigtabgen_test$genus), levels = names(x))
 ggplot(sigtabgen_test, aes(x = genus, y = logFC, color = family)) + geom_point(size=6) + 
   theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
 ```
@@ -1091,121 +1091,6 @@ For this data set the model is able to correct the biais cause by one method and
 For both data set we conclude the same thing, which is good. 
 
 
-```{r}
-  # differential analysis of sequence read count data with edgeR
-  #obj$data$tax_data %>%
-  #  group_by(family)%>%
-  #  summarise()
-meta_g_b_decond_table_rare%>%
-  make.tax.tree.comp(method = c("R1_B","R2_B")) -> obj1
-
-obj1$data$tax_data %>%
-  select(starts_with("BU"),taxon_id) %>%
-  column_to_rownames("taxon_id") -> otu_tab
-names(obj1$taxa)
-# Get rank(taxa) of each id
-
-tab %>%
-    select(taxa) %>%
-    pivot_longer(starts_with("BU"), names_to = "sample_id", values_to = "reads") %>%
-    group_by(sample_id, {{taxa}},taxon_id) %>%
-    summarise(reads_sum = sum(reads))%>%
-    pivot_wider(names_from = "sample_id", values_from = "reads_sum", values_fill = 0) 
-    
-
-tax_abund%>%
-  filter(taxon_rank == "k")
-differential.analysis(obj1)
-
-
-
-obj1$data$
-obj1$data$tax_data %>%
-  select(taxon_id , kingdom, phylum, class, order, family, genus) %>%
-  column_to_rownames("taxon_id") %>%
-  as.matrix-> tax_tab
-
-data.frame(sample_ID = colnames(otu_tab)) %>%
-  mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]$")) %>%
-  column_to_rownames("sample_ID") -> sampledata
-
-physeq_obj = phyloseq(otu_table(otu_tab, taxa_are_rows = T), tax_table(tax_tab), sample_data(sampledata))
-
-ge = phyloseq_to_edgeR(physeq_obj, group="method")
-et = exactTest(ge, pair=c("R1_B", "R2_B"))
-# Extract values from test results
-tt = topTags(et, n=nrow(dge$table), adjust.method="fdr", sort.by="PValue")
-res = tt@.Data[[1]]
-
-pair_wise_taxa_df = res%>%select(logFC, logCPM, PValue, FDR)
-taxa = "order"
-
-obj1$data$tax_data%>%
-  compute.diff.analysis.for.taxa(taxa = order)
-
-obj1$data$tax_data %>%
-    select(starts_with("BU"),taxon_id) %>%
-    column_to_rownames("taxon_id") -> otu_tab
-
-  for(taxa in c( "kingdom", "phylum", "class", "order", "family")){
-
-}  
-  
-  obj1$data$tax_data %>%
-    select(taxon_id , kingdom, phylum, class, order, family, genus) %>%
-    column_to_rownames("taxon_id") %>%
-    as.matrix-> tax_tab
-  
-  data.frame(sample_ID = colnames(otu_tab)) %>%
-    mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]$")) %>%
-    column_to_rownames("sample_ID") -> sampledata
-  
-  physeq_obj = phyloseq(otu_table(otu_tab, taxa_are_rows = T), tax_table(tax_tab), sample_data(sampledata))
-  
-  ge = phyloseq_to_edgeR(physeq_obj, group="method")
-  et = exactTest(ge, pair=c("R1_B", "R2_B"))
-  # Extract values from test results
-  tt = topTags(et, n=nrow(dge$table), adjust.method="fdr", sort.by="PValue")
-  res = tt@.Data[[1]]
-  
-  pair_wise_taxa_df = cbind(pair_wise_taxa_df, res$FDR)
-}
-
-sigtab = res[(res$FDR < alpha),]
-sigtab = cbind(as(sigtab, "data.frame"), as(tax_table(physeq_obj)[rownames(sigtab), ], "matrix"))
-   
-theme_set(theme_bw())
-scale_fill_discrete <- function(palname = "Set1", ...) {
-    scale_fill_brewer(palette = palname, ...)
-}
-sigtabgen = subset(sigtab, !is.na(genus))
-# Phylum order
-x = tapply(sigtabgen$logFC, sigtabgen$phylum, function(x) max(x))
-x = sort(x, TRUE)
-sigtabgen$phylum = factor(as.character(sigtabgen$phylum), levels = names(x))
-# Genus order
-x = tapply(sigtabgen$logFC, sigtabgen$genus, function(x) max(x))
-x = sort(x, TRUE)
-sigtabgen$Genus = factor(as.character(sigtabgen$genus), levels = names(x))
-ggplot(sigtabgen, aes(x = genus, y = logFC, color = phylum)) + geom_point(size=6) + 
-  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5))
-
-obj1$data$tax_data %>%
-  pivot_longer(starts_with("BU"), names_to = "sample_id", values_to =  "reads")%>%
-  mutate(method = str_extract(sample_id, "R\\d_[BG]"))%>%
-  group_by(taxon_id,method)%>%
-
-  summarise(sum_reads = sum(reads))%>%
-  pivot_wider(names_from = method, values_from = sum_reads)%>%
-  mutate(diff_read = R1_B - R2_B)%>%
-  mutate(diff_is = case_when(taxon_id %in% rownames(sigtabgen) ~ "signif",
-                   !(taxon_id %in% rownames(sigtabgen)) ~ "NS"))%>%
-  ggplot()+
-  geom_point(aes(taxon_id, diff_read))+
-  facet_wrap(~diff_is)
-
-```
-
 FC is for fold change which is a ratio between 2 quantities. For exemple :
 A = 10 and B = 30 -> the FC of B with respect to A  is B/A, in this case it is
 60/30 = 2 ; it is defined as a fold-change of 3
@@ -1225,7 +1110,7 @@ differential.analysis.Zif <- function(obj = obj3, pair,
                                         nrBurnIn=1000,
                                         nrSamples=1000,
                                         nrThin = 3){
-  ## Setup dataa out of metacoder object
+  ## Setup data out of metacoder object
   # Extract taxon rank associated to each Metacoder taxon_id
   rank_df = data.frame(taxon_rank = sapply(names(obj$taxa), function(x) obj$taxa[[x]]$rank$name)) %>%
   rownames_to_column("taxon_id")
@@ -1323,6 +1208,7 @@ differential.analysis.Zif <- function(obj = obj3, pair,
   return(pair_wise_taxa_df)
 }
 
+#load("outputs/result_bayes_obj3.Rdata")
 table(pair_wise_taxa_df$signif )
 table(obj3$data$diff_analysis_table$PValue>0.05)
 obj3$data$diff_analysis_table$taxon_id[1:1434]
@@ -1355,6 +1241,7 @@ obj3%>%
           node_color_axis_label = "logFC",
           layout = "davidson-harel", initial_layout = "reingold-tilford",
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
 postSamples_df <-  post_sample2 %>% ggs()
 postSamples_df%>%
   mutate(group = str_extract(Parameter, "alpha\\d"),
@@ -1391,10 +1278,7 @@ p = rep(0.8, n_taxa) # probability of presence
 pi_ = matrix(rbinom(n_taxa*n_sample,1,p ),nrow = n_taxa, ncol = n_sample)
 rowSums(pi_)/100 #should be around 0.8
 
-sigma = round(rgamma(n_taxa, 2,2),2) # taxa specific over-dispersion parameter
-u = matrix(rnorm(n_taxa*n_sample, 0, sigma), nrow = n_taxa, ncol = n_sample) # taxa- and sample-specific random effect
-
-beta = c(rep(log(0.25), 4), rep(log(1),2), rep(log(4), 4)) # scaling detection factor between group for each taxa
+beta = c(rep(log(0.25), 4), rep(log(1),2), rep(log(4), 4)) # scaling detection factor of group 2 for each taxa
 group = c(rep(0,n_sample/2),rep(1,n_sample/2))
 
 lambda = matrix(NA,nrow = n_taxa, ncol = n_sample)
@@ -1407,7 +1291,6 @@ for (t in 1:n_taxa){
   }
 }
 hist(Y, breaks = 40)
-
 ```
 
 # basic model of comparison
@@ -1420,7 +1303,7 @@ nrThin = 1
 modelName1 <- "model{
   for (i in 1:D[1]) {    # For each OTU
   		for (j in 1:group[1]){ # I both group we test
-  			Y[i,j] ~ dpois(exp(alpha[i]))
+  			Y[i,j] ~ dpois(exp(alpha[i] ))
   		}
   	  	  
       for (j in (group[1]+1):(group[1]+group[2])){
@@ -1486,12 +1369,12 @@ To account for this I will add a probability of observing each taxa in each samp
 modelName2 <-"model{
   for (i in 1:D[1]) {    # For each OTU
   		for (j in 1:group[1]){ # I both group we test
-  			Y[i,j] ~ dpois(exp(alpha[i] - 1000* pi[i,j]))
-  				pi[i,j] ~ dbern(p[i]) # zero inflation
+  			Y[i,j] ~ dpois(exp(alpha[i] * pi[i,j]))
+  			pi[i,j] ~ dbern(p[i]) # zero inflation
   		}
   	  	  
       for (j in (group[1]+1):(group[1]+group[2])){
-  			Y[i,j] ~ dpois(exp(alpha[i] + beta[i] - 1000* pi[i,j])) 
+  			Y[i,j] ~ dpois(exp((alpha[i] + beta[i])* pi[i,j])) 
   				pi[i,j] ~ dbern(p[i]) # zero inflation
       }
       
@@ -1536,7 +1419,95 @@ postSamples_df2%>%
   facet_wrap(~Parameter, scale = "free")+
   geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
   scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
-true_val = data.frame(true_val = c(alpha,beta,p), group = c(rep("alpha",10),rep("beta",10),rep("p",10)),taxa_id = as.character(rep(1:10,3) ))
+true_val = data.frame(true_val = c(alpha,beta,p), group = c(rep("alpha",n_taxa),rep("beta",n_taxa),rep("p",n_taxa)),taxa_id = as.character(rep(1:n_taxa,3) ))
+
+postSamples_df2%>%
+  left_join(true_val, by = join_by(group,taxa_id))%>%
+  ggplot() +
+  facet_wrap(~taxa_id)+
+  geom_density(aes(value, fill = group), alpha = 0.3)+
+  geom_vline(aes(xintercept = true_val, col = group), cex = 2)+
+  scale_fill_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
+  main_theme
+quantile_summary2$quantiles[,3]
+
+```
+
+#add complexity
+
+Same type of data but I add :
+ - a scaling factor for one method
+ - and an over-dispersion parameter per taxa and per sample (more ramdome effect)
+
+
+```{r}
+set.seed(1000)
+n_sample = 20
+n_taxa = 10 
+alpha = rnorm(n_taxa,log(20)) # True abundance mean per taxa
+
+p = rep(0.8, n_taxa) # probability of presence
+pi_ = matrix(rbinom(n_taxa*n_sample,1,p ),nrow = n_taxa, ncol = n_sample)
+rowSums(pi_)/100 #should be around 0.8
+
+# Over dispersion
+sigma = round(rgamma(n_taxa, 2,2),2) # taxa specific over-dispersion parameter
+u = matrix(rnorm(n_taxa*n_sample, 0, sigma), nrow = n_taxa, ncol = n_sample) # taxa- and sample-specific random effect
+
+beta = c(rep(log(0.25), 4), rep(log(1),2), rep(log(4), 4)) # scaling detection factor between group for each taxa
+group = c(rep(0,n_sample/2),rep(1,n_sample/2))
+
+lambda = matrix(NA,nrow = n_taxa, ncol = n_sample)
+Y = matrix(NA,nrow = n_taxa, ncol = n_sample)
+
+for (t in 1:n_taxa){
+  for(s in 1:n_sample){
+  # method 2 will have 10 time more reads in each samples : group[s]*log(10)
+  # 
+  lambda[t,s] =  exp(alpha[t] + u[t,s] + group[s]*beta[t] + group[s]*log(10))*pi_[t,s]
+  Y[t,s] = rpois(1, lambda[t,s])
+  }
+}
+hist(Y, breaks = 40)
+
+```
+
+With those data the modl 2 should perform badly. because of  the sacling factor of group 2 the value of FC should be mainly positive because 
+ab. grp2 > ab. grp1
+
+```{r}
+data_list = list(
+  Y = Y,
+  D = dim(Y),
+  group = c(10,10)
+)
+
+init_list <- list(
+  alpha = rnorm(n_taxa),
+  beta = rnorm(n_taxa),
+  p =  runif(n_taxa,0,1),
+  pi = Y * 0
+)
+
+model2 <- jags.model(textConnection(modelName2),data = data_list,inits = init_list, n.chains = 1,n.adapt = nrAdapt)
+update(model2,n.iter=nrBurnIn)
+post_sample2 <- coda.samples(model2,c("alpha", "beta"),n.iter = nrSamples,thin=nrThin)
+coda.samples(model2,c("p"),n.iter = nrSamples,thin=nrThin)%>%summary
+
+summary(post_sample2) -> quantile_summary2
+postSamples_df2 <-  post_sample2 %>% ggs()
+postSamples_df2%>%
+  mutate(group = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 1),
+         taxa_id = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 2))-> postSamples_df2
+
+postSamples_df2%>%
+  filter(taxa_id == 7)%>%
+  ggplot() +
+  facet_wrap(~Parameter, scale = "free")+
+  geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
+true_val = data.frame(true_val = c(alpha,beta,p), group = c(rep("alpha",n_taxa),rep("beta",n_taxa),rep("p",n_taxa)),taxa_id = as.character(rep(1:n_taxa,3) ))
 
 postSamples_df2%>%
   left_join(true_val, by = join_by(group,taxa_id))%>%
@@ -1547,8 +1518,198 @@ postSamples_df2%>%
   scale_fill_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
   scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
   main_theme
+quantile_summary2$quantiles[,3]
+alpha
+save.image()
 ```
 
+Let's account for sacling factor. I'm add a standartization with respect to row sums to account for sequencing depth of each sample
+
+```{r}
+modelName3 <-"model{
+  for (i in 1:D[1]) {    # For each OTU
+  		for (j in 1:group[1]){ # I both group we test
+  			Y[i,j] ~ dpois(exp((alpha[i] + log(N[j])) * pi[i,j]))
+  			pi[i,j] ~ dbern(p[i]) # zero inflation
+  		}
+  	  	  
+      for (j in (group[1]+1):(group[1]+group[2])){
+  			Y[i,j] ~ dpois(exp((alpha[i] + beta[i] + log(N[j]))* pi[i,j])) 
+  				pi[i,j] ~ dbern(p[i]) # zero inflation
+      }
+      
+  		alpha[i] ~ dnorm(0,0.01) # OTU specific true abundance
+  		beta[i] ~ dnorm(0,0.01) # OTU diff abundance in grp 2 compaire to grp 1
+  		
+      p[i] ~ dbeta(1,1) # Zero infaltion parameter specific to OTU (with beta prior distrib)
+  }
+}"
+
+# basic model that estimate the 
+
+data_list = list(
+  Y = Y,
+  D = dim(Y),
+  N = colSums(Y)/median(colSums(Y)),
+  group = c(10,10)
+)
+
+init_list <- list(
+  alpha = rnorm(n_taxa),
+  beta = rnorm(n_taxa),
+  p =  runif(n_taxa,0,1),
+  pi = Y * 0
+)
+
+#MCMC run settings
+
+model3 <- jags.model(textConnection(modelName3),data = data_list,inits = init_list, n.chains = 1,n.adapt = nrAdapt)
+update(model3,n.iter=nrBurnIn)
+post_sample3 <- coda.samples(model3,c("alpha", "beta"),n.iter = nrSamples,thin=nrThin)
+coda.samples(model3,c("p"),n.iter = nrSamples,thin=nrThin)%>%summary
+
+summary(post_sample3) -> quantile_summary3
+postSamples_df3 <-  post_sample3 %>% ggs()
+postSamples_df3%>%
+  mutate(group = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 1),
+         taxa_id = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 2))-> postSamples_df3
+
+postSamples_df3%>%
+  filter(taxa_id == 7)%>%
+  ggplot() +
+  facet_wrap(~Parameter, scale = "free")+
+  geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
+true_val = data.frame(true_val = c(alpha,beta,p), group = c(rep("alpha",n_taxa),rep("beta",n_taxa),rep("p",n_taxa)),taxa_id = as.character(rep(1:n_taxa,3) ))
+
+postSamples_df3%>%
+  left_join(true_val, by = join_by(group,taxa_id))%>%
+  ggplot() +
+  facet_wrap(~taxa_id,)+
+  geom_density(aes(value, fill = group), alpha = 0.3)+
+  geom_vline(aes(xintercept = true_val, col = group), cex = 2)+
+  scale_fill_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
+  main_theme
+quantile_summary3$quantiles[,3]
+beta
+```
+Now the estimation are still bad (because i don't account for over dispersion per taxa and per sample), but  beta are better etimated that with model 2. They are the same sign that true values, which meas that the standardization worked.
+
+Lets take in consideration over dispersion
+
+```{r}
+modelName4 <-"model{
+
+  for (i in 1:D[1]) {    # For each OTU
+  		for (j in 1:group[1]){ # I both group we test
+  			Y[i,j] ~ dpois(exp((phi[i,j] + log(N[j])) * pi[i,j]))
+  			pi[i,j] ~ dbern(p[i]) # zero inflation
+  			phi[i,j] ~ dnorm(alpha[i], binTau[i])
+  		}
+  	  	  
+      for (j in (group[1]+1):(group[1]+group[2])){
+  			Y[i,j] ~ dpois(exp((phi[i,j]  + log(N[j]))* pi[i,j])) 
+  				pi[i,j] ~ dbern(p[i]) # zero inflation
+  				phi[i,j] ~ dnorm(alpha[i] + beta[i], binTau[i])
+      }
+      
+  		alpha[i] ~ dnorm(0,0.01) # OTU specific true abundance
+  		beta[i] ~ dnorm(0,0.01) # OTU diff abundance in grp 2 compaire to grp 1
+  		
+      p[i] ~ dbeta(1,1) # Zero infaltion parameter specific to OTU (with beta prior distrib)
+      
+      binVar[i] ~ dgamma(kappa,eta) T(0,10000)	# Gamma distribution on variance
+	  	binTau[i] <- 1/binVar[i] # compute precision (inv. of variance)
+  }
+  kappa ~ dunif(0,50) 
+	eta ~ dunif(0,1000) 
+	
+}"
+
+# basic model that estimate the 
+
+data_list = list(
+  Y = Y,
+  D = dim(Y),
+  N = colSums(Y)/median(colSums(Y)),
+  group = c(10,10)
+)
+
+init_list <- list(
+  alpha = rnorm(n_taxa),
+  beta = rnorm(n_taxa),
+  p =  runif(n_taxa,0,1),
+  pi = Y * 0,
+  kappa = 1,
+  eta = 1,
+  binVar = runif(dim(Y)[1],0.05,0.1),
+  phi = alpha + (log(Y+0.1)-alpha)
+)
+
+#MCMC run settings
+
+model4 <- jags.model(textConnection(modelName4),data = data_list,inits = init_list, n.chains = 1,n.adapt = nrAdapt)
+update(model4,n.iter=nrBurnIn)
+post_sample4 <- coda.samples(model4,c("alpha", "beta"),n.iter = nrSamples,thin=nrThin)
+coda.samples(model4,c("p"),n.iter = nrSamples,thin=nrThin)%>%summary
+
+summary(post_sample4) -> quantile_summary4
+postSamples_df4 <-  post_sample4 %>% ggs()
+postSamples_df4%>%
+  mutate(group = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 1),
+         taxa_id = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 2))-> postSamples_df4
+
+postSamples_df4%>%
+  filter(taxa_id == 7)%>%
+  ggplot() +
+  facet_wrap(~Parameter, scale = "free")+
+  geom_line(aes(Iteration, value , col = as.factor(Chain)), alpha = 0.3)+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 5))
+true_val = data.frame(true_val = c(alpha,beta,p), group = c(rep("alpha",n_taxa),rep("beta",n_taxa),rep("p",n_taxa)),taxa_id = as.character(rep(1:n_taxa,3) ))
+
+postSamples_df4%>%
+  left_join(true_val, by = join_by(group,taxa_id))%>%
+  ggplot() +
+  facet_wrap(~taxa_id,)+
+  geom_density(aes(value, fill = group), alpha = 0.3)+
+  geom_vline(aes(xintercept = true_val, col = group), cex = 2)+
+  scale_fill_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
+  scale_color_manual(values = wesanderson::wes_palette("FantasticFox1", n = 3))+
+  main_theme
+quantile_summary4$quantiles[,3]
+beta
+```
+
+
+```{r}
+set.seed(1000)
+n_sample = 20
+n_taxa = 10 
+alpha = rnorm(n_taxa,log(20)) # True abundance mean
+
+p = rep(0.8, n_taxa) # probability of presence
+pi_ = matrix(rbinom(n_taxa*n_sample,1,p ),nrow = n_taxa, ncol = n_sample)
+rowSums(pi_)/100 #should be around 0.8
+
+sigma = round(rgamma(n_taxa, 2,2),2) # taxa specific over-dispersion parameter
+u = matrix(rnorm(n_taxa*n_sample, 0, sigma), nrow = n_taxa, ncol = n_sample) # taxa- and sample-specific random effect
+
+beta = c(rep(log(0.25), 4), rep(log(1),2), rep(log(4), 4)) # scaling detection factor between group for each taxa
+group = c(rep(0,n_sample/2),rep(1,n_sample/2))
+
+lambda = matrix(NA,nrow = n_taxa, ncol = n_sample)
+Y = matrix(NA,nrow = n_taxa, ncol = n_sample)
+for (t in 1:n_taxa){
+  for(s in 1:n_sample){
+  
+  lambda[t,s] =  exp(alpha[t] + group[s]*beta[t])*pi_[t,s]
+  Y[t,s] = rpois(1, lambda[t,s])
+  }
+}
+hist(Y, breaks = 40)
+
+```
 
 ```{r}
 modelName3 <- "

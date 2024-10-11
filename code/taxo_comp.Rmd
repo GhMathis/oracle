@@ -1,0 +1,1441 @@
+---
+title: "Untitled"
+author: "Mathis Gheno"
+date: "2024-10-03"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
+title: "01_metho_comparision_taxo"
+author: "Mathis Gheno"
+date: "2024-09-20"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+------------------------------------------------------------------------
+
+## load required packages
+
+```{r packages, message=FALSE}
+library(tidyverse)
+library(ade4) # Coinertia
+library(vegan) # Rarefaction
+library(ggrepel)
+library(metacoder)
+library(phyloseq)
+
+library(rjags)
+library(ggmcmc)
+library(coda)
+
+main_theme = theme_minimal()+
+  theme(line = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        panel.border = element_blank(),
+        axis.ticks =  element_line(colour = "black"),
+        axis.text.x = element_text(colour = "black", size=22, face="italic", angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(colour = "black", size=22, face="italic"),
+        legend.title = element_text(colour = "black", size=20,
+                                    hjust =0.5),
+        
+        legend.text = element_text(colour = "black", size=18),
+        axis.title= element_text(size=28),
+        strip.text = element_text(colour = "black", size=15, face ="italic"))
+```
+
+## Data path
+
+```{r}
+metab1 = "data/metabarcoding_vs_metagenomics/oracle_metaBt0_16S_samples_run_20190715_kraken2_assignment_genuses.tsv"
+metab2 = "data/metabarcoding_vs_metagenomics/oracle_metaBt0_16S_samples_run_20200106_kraken2_assignment_genuses.tsv"
+metag1 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_12_samples_kraken2_SSU_assignment_genuses.tsv"
+metag2 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_21_1_samples_kraken2_SSU_assignment_genuses.tsv"
+metag3 = "data/metabarcoding_vs_metagenomics/oracle_metaGt0_SAMA_21_2_samples_kraken2_SSU_assignment_genuses.tsv"
+```
+
+# Load data
+
+## Set up function to load and pepare data
+
+```{r}
+taxonomic_levels <- c("kingdom", "phylum", "class", "order")# "family", "genus")
+## ---- Arrange metaB ----
+
+# Select data from bracken method, and rename columns 
+select.and.rename.cols = function(tab, method = "B"){
+  tab %>%
+    read_tsv(col_names = T, skip = 1) %>%
+    select(contains("bracken_genuses"), `#OTU ID`, taxonomy) %>%
+    rename_with( # rename colnames
+      . %>%
+      str_remove( "_bracken_genuses") %>% 
+      str_replace_all("^OR-", "BU_") %>% 
+      str_replace_all("-", "_") %>%
+      str_remove("_S\\d+") %>%
+      #  (^T_) Select strings with the letter T at the beginning of the string; (\\d) detect number ; 
+      #  "CONT_BU_PCR_\\2" replace name to matching string and add group 2 (which correspond to  (\\d) )
+      str_replace("(^T_)(\\d)", "CONT_BU_PCR_\\2") %>% 
+      str_replace("(BU_T_extr)", "CONT_BU_ext") %>%
+      str_replace("(^T_Ex)", "CONT_BU_ext") %>%
+      str_replace("#OTU ID", "OTU") %>%
+      # add a 0 in matching sting eg. BU_SER_1_R1 -> BU_SER_01_R1
+      str_replace("(BU_[A-Z]+_)(\\d{1})(_R\\d+)", "\\10\\2\\3")
+      ) %>%
+    rename_with(~ paste0(., "_", method), contains("BU")) %>% # add B or G at the end of soil code depending on the method (metabarcoding or metagenomic)
+    mutate(taxonomy = str_remove(taxonomy, "; [f]__.+")) %>%
+    separate_wider_delim(taxonomy, names = taxonomic_levels, delim = "; ", cols_remove = F) # Separate taxonomy column in columns of taxonomic levels
+    # filter(kingdom == "k__Bacteria")
+}
+
+```
+
+## Decontamination function
+
+Compute the total number of reads for each OTU present in control samples. That sum is then substracted from all occurrences of that OTU in true samples. The rationale is as follows:
+
+-   if an OTU is abundant in control samples, but rare in true samples, then it is a contamination specific to the control samples, and it will be eliminated by the substraction (i.e, final abundance is 0),
+-   if an OTU is present in control samples, and present in true samples (systematic contamination, will be mitigated by the substraction),
+-   if an OTU is rare in control samples, but abundant in true samples (cross-talk, will be eliminated/mitigated by the substraction)
+
+Control samples can be eliminated from the statistical analysis after the substraction (all OTUs present in control samples have been zeroed out).
+
+```{r}
+. %>%
+  replace(. == 0, NA) %>%
+  pivot_longer(starts_with("BU"), names_to = "samples", values_to = "reads") %>%
+  filter(!is.na(reads)) %>%
+  # merge control samples
+  mutate( n = rowSums(across(starts_with("CONT")), na.rm = T)
+          ) %>%
+  # substract abundance of control samples
+  mutate(reads = case_when(
+    is.na(n)  ~ reads,
+    n > reads ~ 0,
+    TRUE      ~ reads - n)
+    ) %>%
+  select(-n,-starts_with("CONT")) %>%
+  pivot_wider(values_from = reads, names_from = samples, values_fill = 0) -> decontaminate
+
+
+```
+
+## Load and format data of both method in the same dataframe
+
+```{r}
+metab1 %>%
+ select.and.rename.cols("B") %>%
+ decontaminate -> metab1_decont_table
+
+metab2 %>%
+ select.and.rename.cols("B") %>%
+ decontaminate -> metab2_decont_table
+
+# Merge run 1 and 2 of metaB, because some sample failed in the first run
+metab1_decont_table %>%
+  full_join(metab2_decont_table, by = join_by(OTU == OTU, kingdom == kingdom, phylum == phylum,
+                                               class == class, order == order, taxonomy == taxonomy)
+            #family == family,#genus == genus
+            ) %>%
+  select(-ends_with(".x")) %>% # Remove conflicting columns from the left-hand side
+  rename_with(~ sub(".y", "", .), ends_with(".y")) %>%  # Rename right-hand columns
+  mutate(across(where(is.numeric), 
+                ~ replace(., is.na(.), 0))
+         ) -> metab_decont_table
+
+          
+metag1 %>%
+ select.and.rename.cols("G") %>%
+ decontaminate -> metag1_decont_table
+
+metag1_decont_table %>%
+  full_join(metab_decont_table, by = join_by(OTU == OTU, kingdom == kingdom, phylum == phylum,
+                                               class == class, order == order, taxonomy == taxonomy)
+            # family == family, genus == genus
+            ) %>%
+   mutate(across(where(is.numeric),
+                 ~ replace(., is.na(.), 0))
+          ) %>%
+   select(-c(BU_TS_15_R1_B, BU_TS_15_R2_B)) -> meta_g_b_decond_table # remove sample because missing for metaG
+
+```
+
+### Rarefaction function
+
+```{r}
+rarefaction.func = function(df,rar_sample, n_rare = 100, rarcur = T){
+  
+  
+  if(rarcur){ # {{ if rarefaction curve needed}}
+    metab1_decont_table %>%
+      select(starts_with("BU")) %>%
+      t() %>%
+      rarecurve(step = 20, sample = rar_sample, col = "blue", cex = 0.6)
+  }
+   df %>%
+    select(starts_with("BU")) %>%
+    dim -> D
+   # {{rarefaction}}
+  df_rarefy = matrix(0, nrow =  D[1], ncol = D[2])
+  for(n in 1:n_rare){
+  df %>%
+    select(starts_with("BU")) %>%
+    t() %>%
+    rrarefy(rar_sample) %>%
+    t() + df_rarefy -> df_rarefy
+    
+  }
+  round(df_rarefy/n_rare) -> df_rarefy
+  df_rarefy %>%
+    bind_cols(
+      df %>%
+        select(!starts_with("BU"))
+    ) -> df_rarefy
+  return(df_rarefy)
+}
+
+```
+
+### Sequencing depth per method and per samples (Libraries sizes)
+
+```{r}
+meta_g_b_decond_table %>%
+  pivot_longer(starts_with("BU"), names_to = "sample_ID", values_to = "reads") %>%
+  group_by(sample_ID) %>%
+  summarise(reads_sum = sum(reads)) %>% 
+  arrange(reads_sum) -> lib_size
+
+lib_size$reads_sum[1] -> min_ech
+
+lib_size %>%
+  mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]")) %>%
+  ggplot()+
+  geom_point(aes(x = reorder(sample_ID, reads_sum), y = reads_sum, col = method))+
+  scale_y_log10(limits = c(0.01, 10^6))+
+  labs(x = "Sample ID", y = "Reads sum per sample (log10)", col ="Method")+
+  theme_classic()+
+  theme(axis.text.x = element_text(colour = "black", size=5, face="italic", angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(colour = "black", size=22, face="italic"),
+        legend.title = element_text(colour = "black", size=20,
+                                    hjust =0.5),
+        
+        legend.text = element_text(colour = "black", size=18))
+```
+
+### Rarefaction
+
+```{r}
+set.seed(1000)
+meta_g_b_decond_table %>%
+  rarefaction.func(rar_sample = min_ech, rarcur = T) -> meta_g_b_decond_table_rare
+
+```
+### Diversity comparison
+
+```{r}
+library(hilldiv)
+
+#  richness
+dR <- meta_g_b_decond_table_rare %>% 
+  column_to_rownames("OTU") %>%
+  select(starts_with("BU")) %>%
+  hilldiv::hill_div(qvalue = 0) %>%
+  as_tibble(rownames = NA) %>%
+  rownames_to_column(var = "samples") %>%
+  mutate(method = str_extract(samples, "R\\d_[BG]"),
+         type = "richness")
+  
+
+#  shannon diversity as hill numbers; rare species
+dREr <- meta_g_b_decond_table_rare %>% 
+  column_to_rownames("OTU") %>%
+  select(starts_with("BU")) %>%
+  hilldiv::hill_div(qvalue = 1) %>%
+  as_tibble(rownames = NA) %>%
+  rownames_to_column(var = "samples") %>%
+  mutate(method = str_extract(samples, "R\\d_[BG]"),
+         type = "shannon")
+
+## inverse Simpson = simpson diversity as hill numbers; abundant species
+dREa <-meta_g_b_decond_table_rare %>% 
+  column_to_rownames("OTU") %>%
+  select(starts_with("BU")) %>%
+  hilldiv::hill_div(qvalue = 2) %>%
+  as_tibble(rownames = NA) %>%
+  rownames_to_column(var = "samples") %>%
+  mutate(method = str_extract(samples, "R\\d_[BG]"),
+         type = "simpson")
+
+# evenness (= shannon evenness) as hill ratio
+eDRr <- dREr %>%
+  left_join(dR, by = "samples") %>%
+  mutate(value = value.x / value.y) %>%
+  select(samples,value) %>%
+  mutate(method = str_extract(samples, "R\\d_[BG]"),
+         type = "eveness_sha")
+
+#{{evenness (= ssimpson evenness) as hill ratio}}
+eDRa  <- dREa %>%
+  left_join(dR, by = "samples") %>%
+  mutate(value = value.x / value.y) %>%
+  select(samples,value) %>%
+  mutate(method = str_extract(samples, "R\\d_[BG]"),
+         type = "eveness_sim")
+
+df_diversites <- dR %>%
+  bind_rows(dREr,dREa,eDRr,eDRa) %>%
+  mutate(soil_code = str_extract(samples, "BU_[A-Z]+_\\d+")) %>%
+  select(-samples) %>%
+  pivot_wider(names_from = method, values_from = value )
+
+```
+
+```{r}
+df_diversites%>%
+  ggplot()+
+  geom_point(aes(R1_B,R2_B))+
+  geom_smooth(aes(R1_B,R2_B), method = "lm")+
+  facet_wrap(~type, scale = "free")+
+  main_theme
+
+df_diversites%>%
+  ggplot()+
+  geom_point(aes(R1_G,R2_G))+
+    geom_smooth(aes(R1_G,R2_G), method = "lm")+
+  facet_wrap(~type, scale = "free")+
+  main_theme
+
+df_diversites%>%
+  ggplot()+
+  geom_point(aes(R1_B,R1_G))+
+  geom_smooth(aes(R1_B,R1_G), method = "lm")+
+  facet_wrap(~type, scale = "free")+
+  main_theme
+
+df_diversites%>%
+  ggplot()+
+  geom_point(aes(R2_B,R2_G))+
+  geom_smooth(aes(R2_B,R2_G), method = "lm")+
+  facet_wrap(~type, scale = "free")+
+  main_theme
+```
+
+### Variance and mean distribution of taxon (genus) per method 
+
+```{r}
+
+meta_g_b_decond_table_rare %>% 
+  filter(rowSums(across(starts_with("BU")), na.rm = T) != 0) %>%
+  pivot_longer(starts_with("BU"), names_to = "sample_ID", values_to = "reads") %>%
+  mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]")) %>%
+  group_by(OTU, method) %>%
+  summarise(reads_var = var(reads, na.rm = T),
+            reads_mean = mean(reads, na.rm = T)) %>%
+  ungroup() -> summarise_df
+
+summarise_df %>%
+  ggplot()+
+  facet_wrap(~method)+
+  geom_histogram(aes(x = reads_mean))+
+  scale_x_log10()
+
+summarise_df$reads_var
+
+summarise_df %>%
+  ggplot()+
+  facet_wrap(~method)+
+  geom_histogram(aes(x = reads_var))+
+  scale_x_log10()
+
+```
+
+Meta genomic miss more OTU that meta barcoding. Without accounting OTU at 0 abundances, mean and variance distribution of OTU number of reads look like similar for both method. Now I will check the relation between variance and mean to see if data follow a poisson distribution without zero. (In poisson distib mean = variance)
+
+```{r}
+mod_mean_v_var <- lm(log10(reads_var)~log10(reads_mean)*method,
+                     data = summarise_df%>%
+                              filter(reads_mean>1, reads_var>1)
+                     )
+summary(mod_mean_v_var)
+temp = data.frame(method = c("R1_B", "R2_B", "R1_G", "R2_G"), 
+                  slope = c(coef(mod_mean_v_var)[2],coef(mod_mean_v_var)[2] , coef(mod_mean_v_var)[2]+ coef(mod_mean_v_var)[6], coef(mod_mean_v_var)[2] + coef(mod_mean_v_var)[8]),
+                  intercept =  c(coef(mod_mean_v_var)[1], coef(mod_mean_v_var)[1], coef(mod_mean_v_var)[1], coef(mod_mean_v_var)[1] + coef(mod_mean_v_var)[5]))
+summarise_df%>%
+  left_join(temp, by = "method")%>%
+  filter(reads_mean>1, reads_var>1)%>%
+  ggplot()+
+  facet_wrap(~method)+
+  geom_point(aes(log10(reads_mean), log10(reads_var)))+
+  geom_smooth(aes(log10(reads_mean), log10(reads_var)), size= 1.5, method = "lm")+
+  geom_abline(aes(intercept = intercept, slope =1), col = "red", size = 1.5, linetype = 2)+
+  geom_abline(aes(intercept = intercept, slope =2), col = "purple", size = 1.5, linetype = 2)+
+  scale_x_continuous(limits = c(-2, 7))+
+  scale_y_continuous(limits = c(-2, 7))
+
+temp
+
+
+```
+
+For a $log_{10}(\mu) \approx 0 \rigtharrow log_{10}(\sigma^2) \approx 1.44$ for all method exept 2_G ($\log_{10}(mu_0) = 1.84$) (after species of mean and var under 1 are removed) (IDK what to interpret from that). The slope is arround 1 for R1_G and R2_G. For metagenomic species means are proportionnal to there variance ($\mu \prop \sigma^2$). For metabarcoding slopes are 1.34 for R1_B and R2_B, this tells us that for this method variances are propotional to a power law of means ($\mu^n \prop \sigma^2$ with $n = 1.35$ here)
+
+```{r}
+true_com <- c(rep("A",1000), rep("B",100), rep("C",10))
+
+### Additive 
+n_sim = 1000
+count_df = data.frame(A = rep(NA,n_sim), B = rep(NA,n_sim), C = rep(NA,n_sim))
+prop_df = data.frame(A = rep(NA,n_sim), B = rep(NA,n_sim), C = rep(NA,n_sim))
+for(n in 1:n_sim){
+  ech =  sample(true_com, 200, replace = F)
+  n_A = sum(ech == "A")
+  n_B = sum(ech == "B")
+  n_C = sum(ech == "C")
+  count_df[n,] =c(n_A, n_B, n_C)
+  prop_df[n,] =c(n_A, n_B, n_C)/200
+  
+}
+prop_df%>%
+  pivot_longer(everything(), names_to = "sp", values_to = "abund") %>%
+  group_by(sp) %>%
+  summarise(
+    var_sp = var(abund),
+    mean_sp = mean(abund),
+    sd_sp = sd(abund)
+  ) -> df_summar
+
+ggplot(df_summar)+
+  geom_point(aes(mean_sp, var_sp))+
+  geom_abline(intercept = 0, slope = 1, col = "red", size = 1.5, linetype = 2)+
+  geom_abline(intercept = 0, slope = 2, col = "purple", size = 1.5, linetype = 2)+
+  scale_x_log10()+
+  scale_y_log10()
+
+amplifi_df = data.frame(A = rep(NA,n_sim), B = rep(NA,n_sim), C = rep(NA,n_sim))
+depth = 10
+for(n in 1:n_sim){
+  val = c(1000,100,10)
+  for(d in 1:depth){
+    temp <- runif(3,1,2)
+    val = val*temp
+    }
+  amplifi_df[n,] =val
+}
+amplifi_df%>%
+  pivot_longer(everything(), names_to = "sp", values_to = "abund") %>%
+  group_by(sp) %>%
+  summarise(
+    var_sp = var(abund),
+    mean_sp = mean(abund),
+    sd_sp = sd(abund)
+  ) -> df_amplifi_summar
+
+ggplot(df_amplifi_summar)+
+  geom_point(aes(mean_sp, var_sp))+
+  geom_abline(intercept = 0, slope = 1, col = "red", size = 1.5, linetype = 2)+
+  geom_abline(intercept = 0, slope = 2, col = "purple", size = 1.5, linetype = 2)+
+  scale_x_log10()+
+  scale_y_log10()
+```
+
+
+
+
+
+## Metacoder and phyloseq
+
+Function that compute differential gene analysis with edgeR method from a phyloseq object
+
+```{r}
+phyloseq_to_edgeR = function(physeq, group, method="RLE", ...){
+  require("edgeR")
+  require("phyloseq")
+  # Enforce orientation.
+  if(!taxa_are_rows(physeq) ){ physeq <- t(physeq)}
+  x = as(otu_table(physeq), "matrix")
+  # Add one to protect against overflow, log(0) issues.
+  x = x + 1
+  # Check `group` argument
+  if( identical(all.equal(length(group), 1), TRUE) & nsamples(physeq) > 1 ){
+    # Assume that group was a sample variable name (must be categorical)
+    group = get_variable(physeq, group)
+  }
+  # Define gene annotations (`genes`) as tax_table
+  taxonomy = tax_table(physeq, errorIfNULL=FALSE)
+  if( !is.null(taxonomy) ){
+    taxonomy = data.frame(as(taxonomy, "matrix"))
+  } 
+  # Now turn into a DGEList
+  y = DGEList(counts=x, group=group, genes=taxonomy, remove.zeros = TRUE, ...)
+  # Calculate the normalization factors
+  z = calcNormFactors(y, method=method)
+  # Check for division by zero inside `calcNormFactors`
+  if( !all(is.finite(z$samples$norm.factors)) ){
+    stop("Something wrong with edgeR::calcNormFactors on this data,
+         non-finite $norm.factors, consider changing `method` argument")
+  }
+  # Estimate dispersions
+  return(estimateTagwiseDisp(estimateCommonDisp(z)))
+}
+```
+
+Function that compute differential analysis and return an object compatible to metacoder,
+to plot it on the taxonomic comparison tree
+
+```{r}
+differential.analysis <- function(obj, pair){
+  
+  # Extract taxon rank associated to each Metacoder taxon_id
+  rank_df = data.frame(taxon_rank = sapply(names(obj$taxa), function(x) obj$taxa[[x]]$rank$name)) %>%
+  rownames_to_column("taxon_id")
+  
+  # Join taxon rank and taxon total abundances data frame
+  rank_df %>%
+    left_join(obj$data$tax_abund, by = "taxon_id") %>%
+  tibble -> tax_abund
+  
+  # Create sample data (data frame that indicate sample's condition/method belonging)
+  data.frame(sample_ID = colnames(tax_abund %>%
+                                    select(starts_with("BU")))) %>%
+      mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]$")) %>%
+      column_to_rownames("sample_ID") -> sampledata
+  
+  # Initialize output dataframe
+  pair_wise_taxa_df = data.frame()
+  t_rank = "c"
+  for(t_rank in unique(tax_abund$taxon_rank)){
+    
+    # Compute OTU table with sample from both method in colums and taxa in rows
+    tax_abund %>%
+      filter(taxon_rank == t_rank) %>%
+      select(starts_with("BU"), taxon_id) %>%
+      column_to_rownames("taxon_id") -> otu_tab
+    
+    # Compute taxon table, taxon_id as row name and in a column. taxon_id as row needed  
+    # to create phyloseq object. And I need to have a column that discriminates taxon, which taxon_id from 
+    # meta coder do perfectly.(I could recover the full taxa description (Kindom, class, ...),
+    # but it is not useful because taxon_id is analogue.)
+    tax_abund %>%
+      filter(taxon_rank == t_rank) %>%
+      select(taxon_id )%>%
+      mutate(taxon_id2 = taxon_id) %>%
+      column_to_rownames("taxon_id2") %>%
+      as.matrix -> tax_tab
+  
+    physeq_obj = phyloseq(otu_table(otu_tab, taxa_are_rows = T),
+                          tax_table(tax_tab),
+                          sample_data(sampledata))
+  
+    dge = phyloseq_to_edgeR(physeq_obj, group="method")
+    et = exactTest(dge, pair=c(pair[2], pair[1]))
+    # Extract values from test results
+    tt = topTags(et, n=nrow(dge$table), adjust.method="fdr", sort.by="PValue")
+    res = tt@.Data[[1]]
+    
+    pair_wise_taxa_df %>%
+      bind_rows(res %>%
+                  select(taxon_id, logFC, logCPM, PValue, FDR))%>%
+      tibble() -> pair_wise_taxa_df
+  }
+  return(pair_wise_taxa_df)
+}
+```
+
+Function that make the metacoder object that contain the taxonomic comparison tree, rank comparison (Mann-Whitney/Wilcoxon test)
+
+```{r}
+make.tax.tree.comp = function(df, pair){
+  df %>%
+  select(OTU, kingdom, phylum, class, order, taxonomy, ends_with(pair[1]), ends_with(pair[2])) %>% # family, genus,
+  # create metacoder object
+  metacoder::parse_tax_data(class_cols = "taxonomy", # The column in the input table
+                      class_sep = "; ",
+                      class_regex = "^([a-z]{0,1})_{0,2}(.*)$",
+                      class_key = c("tax_rank" = "taxon_rank", "name" = "taxon_name")) -> obj
+  
+  ##### compute abudance per taxon for the 2 paire
+  obj$data$tax_abund <- metacoder::calc_taxon_abund(obj, "tax_data",
+                                       cols = startsWith(colnames(obj$data$tax_data),"BU"))
+  
+  obj$data$tax_abund_group <- metacoder::calc_taxon_abund(obj, "tax_data",
+                                       cols = startsWith(colnames(obj$data$tax_data),"BU"),
+                                                         groups = str_extract(str_subset(colnames(obj$data$tax_data), "_R\\d_[A-Z+]"), "R\\d_[A-Z+]"))
+  obj$data$diff_table <- metacoder::compare_groups(obj, "tax_abund",
+                                       cols = startsWith(colnames(obj$data$tax_abund),"BU"),
+                                                         groups = str_extract(str_subset(colnames(obj$data$tax_abund), "_R\\d_[A-Z+]"), "R\\d_[A-Z+]"))
+  obj <- mutate_obs(obj, "diff_table",
+                  wilcox_p_value = p.adjust(wilcox_p_value, method = "fdr"))
+  # Ns. set to 0
+  obj$data$diff_table %>%
+    mutate(median_diff = case_when(wilcox_p_value > 0.05 ~ 0,
+                      .default  = median_diff),
+           log2_median_ratio = case_when(wilcox_p_value > 0.05 ~ 0,
+                      .default  = median_diff)) -> obj$data$diff_table
+  
+  ##### differential analysis of sequence read count data with edgeR
+  obj$data$diff_analysis_table <- differential.analysis(obj = obj, pair = pair)
+  
+  # Ns. set to 0
+  obj$data$diff_analysis_table %>%
+    mutate(logFC = case_when(FDR > 0.05 ~ 0,
+                      .default  = logFC),
+           logCPM = case_when(FDR > 0.05 ~ 0,
+                      .default  = logCPM)) -> obj$data$diff_analysis_table
+  
+  return(obj)
+}
+
+```
+
+### Metabarcoding R1 vs R2
+
+```{r}
+pal = colorspace::diverging_hcl(3, palette = "Tropic")
+meta_g_b_decond_table %>%
+  make.tax.tree.comp(pair = c("R1_B","R2_B")) -> obj1
+meta_g_b_decond_table_rare%>%
+  select(ends_with("R1_B")) 
+meta_g_b_decond_table_rare %>%
+  make.tax.tree.comp(pair = c("R1_B","R2_B")) -> obj1_rare
+```
+
+
+```{r}
+
+obj1 %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval = c(-max(abs(log2_median_ratio)), max(abs(log2_median_ratio))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"(wilcox)"))
+
+obj1_rare %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval = c(-max(abs(log2_median_ratio)), max(abs(log2_median_ratio))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2), "(wilcox/rare)"))
+
+sapply(obj1$taxa, function(x) as.character(x$get_name())) %>% 
+  as.data.frame %>%
+  rename(taxa = ".")%>%
+  rownames_to_column("taxon_id") -> taxo1_df
+
+sapply(obj1_rare$taxa, function(x)as.character(x$get_name())) %>% 
+  as.data.frame %>%
+  rename(taxa = ".") %>%
+  rownames_to_column("taxon_id")-> taxo2_df
+
+table(taxo1_df == taxo2_df)# must be only TRUE
+
+obj1$data$diff_table %>%
+  select(taxon_id, log2_median_ratio) %>%
+  left_join(obj1_rare$data$diff_table %>%
+            select(taxon_id, log2_median_ratio), by ="taxon_id" ) %>% 
+  ggplot()+
+  geom_point(aes(log2_median_ratio.x/5, log2_median_ratio.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  labs(x =" log2(m1/m2)/5 No rarefaction", y ="log2 (m1/m2) rarefaction")+
+  main_theme
+```
+
+
+Outlier :
+
+```{r}
+obj1$data$tax_abund %>%
+   filter(taxon_id == "afs") %>%
+   select(ends_with("R1_B")) -  obj1$data$tax_abund %>%
+                                   filter(taxon_id == "afs") %>%
+                                   select(ends_with("R2_B")) 
+obj1_rare$data$tax_abund %>%
+   filter(taxon_id == "afs") %>%
+   select(ends_with("R1_B")) - obj1_rare$data$tax_abund %>%
+                                 filter(taxon_id == "afs") %>%
+                                 select(ends_with("R2_B")) 
+```
+
+#### Differential expression of replicated count data
+
+```{r}
+obj1 %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE"))
+
+obj1_rare %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE rare"))
+
+sapply(obj1$taxa, function(x) as.character(x$get_name())) %>% 
+  as.data.frame %>%
+  rename(taxa = ".") %>%
+  rownames_to_column("taxon_id") -> taxo1_df_DGE
+
+sapply(obj1_rare$taxa, function(x)as.character(x$get_name())) %>% 
+  as.data.frame %>%
+  rename(taxa = ".") %>%
+  rownames_to_column("taxon_id")-> taxo2_df_DGE
+
+obj1$data$diff_analysis_table %>%
+  select(taxon_id, logFC) %>%
+  left_join(obj1_rare$data$diff_analysis_table %>%
+            select(taxon_id, logFC), by ="taxon_id" ) %>% 
+  ggplot()+
+  geom_point(aes(logFC.x, logFC.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  labs(x =" log2(m1/m2) No rarefaction", y ="log2 (m1/m2) rarefaction")+
+  main_theme
+  
+```
+
+### Metagenomic R1 vs R2
+
+```{r}
+meta_g_b_decond_table %>%
+  make.tax.tree.comp(pair = c("R1_G","R2_G")) -> obj2
+
+meta_g_b_decond_table_rare %>%
+  make.tax.tree.comp(pair = c("R1_G","R2_G")) -> obj2_rare
+```
+
+Different pattern for metaG than metaB here in phylum *Protobacteia* the class *Gammaprotobacteria* and *Alphaprotobacteria* are both more detected by R1. *Fimicutes* and *Actinobacteria* are also better detected by R1
+
+#### Better version with statistical significance
+
+```{r}
+
+obj2 %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval =c(-max(abs(log2_median_ratio)), max(abs(log2_median_ratio))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2), "(wilcox)"))
+
+obj2_rare %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval = c(-max(abs(log2_median_ratio)), max(abs(log2_median_ratio))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2), "(wilcox/rare)"))
+
+
+sapply(obj2$taxa, function(x) as.character(x$get_name())) %>% 
+  as.data.frame %>%
+  rename(taxa = ".")%>%
+  rownames_to_column("taxon_id") -> taxo1_df2
+
+sapply(obj2_rare$taxa, function(x)as.character(x$get_name())) %>% 
+  as.data.frame %>%
+  rename(taxa = ".")%>%
+  rownames_to_column("taxon_id")-> taxo2_df2
+table(taxo1_df2 == taxo2_df2)
+
+obj2$data$diff_table %>%
+  select(taxon_id, log2_median_ratio) %>%
+  left_join(obj2_rare$data$diff_table %>%
+            select(taxon_id, log2_median_ratio), by ="taxon_id" )%>% 
+  ggplot()+
+  geom_point(aes(log2_median_ratio.x, log2_median_ratio.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  labs(x =" log2(m1/m2) No rarefaction", y =" log2(m1/m2) rarefaction")+
+  main_theme
+  
+
+```
+
+#### Differential expression of replicated count data
+
+```{r}
+obj2 %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE"))
+
+obj2_rare %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE rare"))
+
+
+obj2$data$diff_analysis_table %>%
+  select(taxon_id, logFC) %>%
+  left_join(obj2_rare$data$diff_analysis_table %>%
+            select(taxon_id, logFC), by ="taxon_id" ) %>% 
+  ggplot()+
+  geom_point(aes(logFC.x, logFC.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  labs(x =" log2(m1/m2) No rarefaction", y ="log2 (m1/m2) rarefaction")+
+  main_theme
+  
+```
+
+### Metabarcoding R1 vs Metagenomic R1
+
+```{r}
+meta_g_b_decond_table %>%
+  make.tax.tree.comp(pair = c("R1_B","R1_G")) -> obj3
+meta_g_b_decond_table_rare %>%
+  make.tax.tree.comp(pair = c("R1_B","R1_G")) -> obj3_rare
+```
+
+#### Better version with statistical significance
+
+```{r}
+
+obj3 %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval =  c(-max(abs(log2_median_ratio)), max(abs(log2_median_ratio))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+obj3_rare %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval =  c(-max(abs(log2_median_ratio)), max(abs(log2_median_ratio))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+```
+
+#### Differential expression of replicated count data
+
+```{r}
+obj3 %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE"))
+
+obj3_rare %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE rare"))
+
+
+obj3$data$diff_analysis_table %>%
+  select(taxon_id, logFC) %>%
+  left_join(obj3_rare$data$diff_analysis_table %>%
+              select(taxon_id, logFC),
+            by ="taxon_id" ) %>% 
+  ggplot()+
+  geom_point(aes(logFC.x, logFC.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  labs(x =" log2(m1/m2) No rarefaction", y ="log2 (m1/m2) rarefaction")+
+  main_theme
+```
+
+### Metabarcoding R2 vs Metagenomic R2
+
+```{r}
+meta_g_b_decond_table %>%
+  make.tax.tree.comp(pair = c("R2_B","R2_G")) -> obj4
+
+meta_g_b_decond_table_rare %>%
+  make.tax.tree.comp(pair = c("R2_B","R2_G")) -> obj4_rare
+
+```
+
+#### Better version with statistical significance
+
+```{r}
+
+obj4 %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval =  c(-max(abs(log2_median_ratio)), max(abs(log2_median_ratio))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+
+obj4_rare %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = log2_median_ratio, # difference between groups
+          node_color_interval =  c(-max(abs(log2_median_ratio)), max(abs(log2_median_ratio))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "Log 2 ratio of median counts",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2)))
+```
+
+#### Differential expression of replicated count data
+
+```{r}
+obj4 %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE"))
+
+obj4_rare %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = logFC, # difference between groups
+          node_color_interval = c(-max(abs(logFC)), max(abs(logFC))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE rare"))
+
+
+obj4$data$diff_analysis_table %>%
+  select(taxon_id, logFC) %>%
+  left_join(obj4_rare$data$diff_analysis_table %>%
+            select(taxon_id, logFC), by ="taxon_id" ) %>% 
+  ggplot()+
+  geom_point(aes(logFC.x, logFC.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  labs(x =" log2 (m1/m2) No rarefaction", y ="log2 (m1/m2) rarefaction")+
+  main_theme
+```
+
+Zero inflation might bias the variance of taxa abundance in each method thus scaling factors are maybe under estimated
+
+```{r}
+data.frame(taxon_rank = sapply(names(obj1$taxa), function(x) obj1$taxa[[x]]$rank$name)) %>%
+  rownames_to_column("taxon_id") -> rank_df
+
+rank_df %>%
+  left_join(obj1$data$tax_abund, by = "taxon_id" ) %>%
+  tibble -> tax_abund
+  
+tax_abund %>%
+    filter(taxon_rank == "k") %>%
+    select(starts_with("BU"), taxon_id) %>%
+    column_to_rownames("taxon_id") %>%
+    as.matrix %>%
+    hist(breaks = 50)
+
+```
+
+### bayesian poisson DGE zero inflated
+
+Function that compute differential analysis (bayesian) with zero inflated parameters and return an object compatible with metacoder,
+to plot it on the taxonomic comparison tree
+```{r}
+differential.analysis.Zif <- function(obj = obj,
+                                        groups = c(79,79), #Indicates the size of each group samples
+                                        tax_rank = c("k", "p", "c", "o", "f", "g"), # taxonomic rank in obj, comparison will be done for each rank
+                                        nrAdapt=1000,
+                                        nrBurnIn=1000,
+                                        nrSamples=1000,
+                                        nrThin = 3,
+                                        chains = 2){
+  ## Setup data out of metacoder object
+  # Extract taxon rank associated to each Metacoder taxon_id
+  data.frame(taxon_rank = sapply(names(obj$taxa), function(x) obj$taxa[[x]]$rank$name)) %>%
+  rownames_to_column("taxon_id") -> rank_df
+  
+  # Join taxon rank and taxon total abundances data frame
+  rank_df %>%
+    left_join(obj$data$tax_abund, by = "taxon_id" ) %>%
+  tibble -> tax_abund
+  
+  # Create sample data (data frame that indicate sample's condition/method belonging)
+  data.frame(sample_ID = colnames(tax_abund %>%
+                                    select(starts_with("BU"))
+                                  )
+             ) %>%
+      mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]$")) %>%
+      column_to_rownames("sample_ID") -> sampledata
+  ##
+  
+  c(rep(0,groups[1]),rep(1,groups[2])) -> group
+  
+  # indicator vector indicating which samples
+  # belong to which group. Note this implementation requires
+  # the two groups to be in consecutive order
+  
+  #MCMC run settings
+
+  # Initialize output dataframe
+  pair_wise_taxa_df <- data.frame()
+  
+  model_zif_list <- list()
+  post_sample_list <-  list()
+
+  for(t_rank in tax_rank){
+    
+    #add pseudo counts to any gene with zeros in one group
+    tax_abund %>%
+    filter(taxon_rank == t_rank) %>%
+    select(starts_with("BU"), taxon_id) %>%
+    column_to_rownames("taxon_id") %>%
+    as.matrix -> Y
+    str(Y)
+    pseudoCounts <- 0
+    for (i in 1:dim(Y)[1]){
+      
+      if(sum(Y[i,1:groups[1]])==0) { # add 1 to taxa with a 0 count across sample in group 1 
+        Y[i,sample(1:groups[1],size=1)] <- 1
+        pseudoCounts = pseudoCounts + 1
+      }
+      if(sum(Y[i,(1+groups[1]):(groups[2]+groups[1])])==0) {  # add 1 to taxa with a 0 count across sample in group 2
+        Y[i,sample((1+groups[1]):(groups[2]+groups[1]),size=1)] <- 1
+        
+        pseudoCounts = pseudoCounts +1
+      }
+    }
+      
+  dim(Y) -> D 
+  
+  list(
+    Y = Y,
+    D = dim(Y),
+    N = colSums(Y)/median(colSums(Y)),
+    group = groups
+  ) -> data_list
+  
+  list(
+      alpha = rnorm(D[1]),
+      beta = rnorm(D[1]),
+      p = runif(n = D[1], min = 0, max = 1),
+      binVar =  runif(D[1], 0.05, 0.1),
+      phi = matrix(rnorm(D[1]*D[2]), ncol = D[2], nrow = D[1]),
+      pi = Y*0,
+      kappa = 1,
+      eta = 1
+    ) -> init_list
+
+  rjags::jags.model("code/Zicompar.jags", data = data_list, inits = init_list, n.chains = chains, n.adapt = nrAdapt) -> model_zif
+  
+  update(model_zif,n.iter=nrBurnIn)
+
+  rjags::coda.samples(model_zif,c("alpha", "beta", "p"),n.iter = nrSamples,thin=nrThin) -> post_sample
+
+  coda::gelman.diag(post_sample, multivariate = F) -> param_convergence
+
+  summary(post_sample) -> quantile_summary
+  
+  # post_sample %>% ggmcmc::ggs() -> postSamples_df
+  # 
+  # postSamples_df %>%
+  # mutate(group = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 1),
+  #        taxa_id = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 2)) -> postSamples_df
+
+ param_convergence[[1]] %>%
+   as.data.frame() %>%
+   rownames_to_column("Parameter") %>%
+   rename(point_est = "Point est.", upper_ci = "Upper C.I.") -> param_convergence_df
+
+  quantile_summary$quantiles %>%
+  data.frame() %>%
+  rownames_to_column("Parameter") %>%
+  filter(str_detect(Parameter,"beta")) %>%
+  left_join(param_convergence_df, by = "Parameter") %>%
+  mutate(signif = case_when(
+    sign(X2.5.) != sign(X97.5.) ~ "NS",
+    sign(X2.5.) == sign(X97.5.) ~ "sign"
+    ),
+    convergence = case_when(
+    upper_ci < 1.2 ~ T,
+    upper_ci > 1.2 ~ F
+    )
+  ) %>%
+  select(beta_lower = X2.5., beta_upper = X97.5., beta = X50., signif, convergence, point_est, upper_ci) -> resultdf
+
+
+  rownames(resultdf) = rownames(Y)
+  resultdf %>%
+    rownames_to_column("taxon_id") -> resultdf
+  
+  pair_wise_taxa_df %>%
+    bind_rows(resultdf)%>%
+    tibble() -> pair_wise_taxa_df
+  
+  model_zif_list = c(model_zif_list, list(model_zif))
+  post_sample_list = c(post_sample_list, list(post_sample))
+
+  }
+
+  return(list(model_zif, post_sample, pair_wise_taxa_df))
+}
+```
+
+```{r}
+differential.analysis.Zif.raref <- function(obj = obj,
+                                        groups = c(79,79), #Indicates the size of each group samples
+                                        tax_rank = c("k", "p", "c", "o", "f", "g"), # taxonomic rank in obj, comparison will be done for each rank
+                                        nrAdapt=1000,
+                                        nrBurnIn=1000,
+                                        nrSamples=1000,
+                                        nrThin = 3,
+                                        chains = 2){
+  ## Setup data out of metacoder object
+  # Extract taxon rank associated to each Metacoder taxon_id
+  data.frame(taxon_rank = sapply(names(obj$taxa), function(x) obj$taxa[[x]]$rank$name)) %>%
+  rownames_to_column("taxon_id") -> rank_df
+  
+  # Join taxon rank and taxon total abundances data frame
+  rank_df %>%
+    left_join(obj$data$tax_abund, by = "taxon_id" ) %>%
+  tibble -> tax_abund
+  
+  # Create sample data (data frame that indicate sample's condition/method belonging)
+  data.frame(sample_ID = colnames(tax_abund %>%
+                                    select(starts_with("BU"))
+                                  )
+             ) %>%
+      mutate(method = str_extract(sample_ID, "R\\d_[A-Z+]$")) %>%
+      column_to_rownames("sample_ID") -> sampledata
+  ##
+  
+  c(rep(0,groups[1]),rep(1,groups[2])) -> group
+  
+  # indicator vector indicating which samples
+  # belong to which group. Note this implementation requires
+  # the two groups to be in consecutive order
+  
+  #MCMC run settings
+
+  # Initialize output dataframe
+  pair_wise_taxa_df <- data.frame()
+  
+  model_zif_list <- list()
+  post_sample_list <-  list()
+  for(t_rank in tax_rank){
+    
+    tax_abund %>%
+    filter(taxon_rank == t_rank) %>%
+    select(starts_with("BU"), taxon_id) %>%
+    column_to_rownames("taxon_id") %>%
+    as.matrix -> Y
+  
+  dim(Y) -> D     
+     
+  list(
+    Y = Y,
+    D = dim(Y),
+    group = groups
+  ) -> data_list
+  
+  list(
+      alpha = rnorm(D[1]),
+      beta = rnorm(D[1]),
+      p = runif(n = D[1], min = 0, max = 1),
+      binVar =  runif(D[1], 0.05, 0.1),
+      phi = matrix(rnorm(D[1]*D[2]), ncol = D[2], nrow = D[1]),
+      pi = Y*0,
+      kappa = 1,
+      eta = 1
+    ) -> init_list
+    
+    rjags::jags.model("code/Zicompar_rarefaction.jags", data = data_list, inits = init_list, n.chains = chains, n.adapt = nrAdapt) -> model_zif
+    
+    update(model_zif,n.iter=nrBurnIn)
+    
+    rjags::coda.samples(model_zif,c("alpha", "beta", "p"),n.iter = nrSamples,thin=nrThin) -> post_sample
+    
+    coda::gelman.diag(post_sample, multivariate = F) -> param_convergence
+    
+    summary(post_sample) -> quantile_summary
+    
+    # post_sample %>% ggmcmc::ggs() -> postSamples_df
+    # 
+    # postSamples_df %>%
+    # mutate(group = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 1),
+    #        taxa_id = str_extract(Parameter,"(.+)\\[(\\d+)\\]", group = 2)) -> postSamples_df
+    
+    param_convergence[[1]] %>%
+     as.data.frame() %>%
+     rownames_to_column("Parameter") %>%
+     rename(point_est = "Point est.", upper_ci = "Upper C.I.") -> param_convergence_df
+    
+    quantile_summary$quantiles %>%
+    data.frame() %>%
+    rownames_to_column("Parameter") %>%
+    filter(str_detect(Parameter,"beta")) %>%
+    left_join(param_convergence_df, by = "Parameter") %>%
+    mutate(signif = case_when(
+      sign(X2.5.) != sign(X97.5.) ~ "NS",
+      sign(X2.5.) == sign(X97.5.) ~ "sign"
+      ),
+      convergence = case_when(
+      upper_ci < 1.2 ~ T,
+      upper_ci > 1.2 ~ F
+      )
+    ) %>%
+    select(beta_lower = X2.5., beta_upper = X97.5., beta = X50., signif, convergence, point_est, upper_ci) -> resultdf
+    
+    
+    rownames(resultdf) = rownames(Y)
+    resultdf %>%
+      rownames_to_column("taxon_id") -> resultdf
+    
+    pair_wise_taxa_df %>%
+      bind_rows(resultdf)%>%
+      tibble() -> pair_wise_taxa_df
+    
+    model_zif_list = c(model_zif_list, list(model_zif))
+    post_sample_list = c(post_sample_list, list(post_sample))
+
+  }
+
+  return(list(model_zif, post_sample, pair_wise_taxa_df))
+}
+```
+
+
+```{r}
+library(parallel)
+library(doParallel)
+library(foreach)
+obj1$data$tax_data
+obj1_rare$data$tax_data
+differential.analysis.Zif.raref(obj = obj1_rare, groups = c(79,79),
+                                 tax_rank = c("k", "p", "c", "o"),
+                                 nrAdapt=100,
+                                 nrBurnIn=100,
+                                 nrSamples=50,
+                                 chains = 5,
+                                 nrThin = 5)
+
+
+parallel.DA.Zif <- function(obj , groups, tax_rank, data_type,
+                            nrAdapt, nrBurnIn, nrSamples, chains, nrThin){
+  if(data_type == "raref"){
+    differential.analysis.Zif.raref(obj = obj, groups = c(79,79),
+                                 tax_rank = tax_rank,
+                                 nrAdapt=nrAdapt,
+                                 nrBurnIn=nrBurnIn,
+                                 nrSamples=nrSamples,
+                                 chains = chains,
+                                 nrThin = nrThin)
+  }else{
+    differential.analysis.Zif(obj = obj, groups = c(79,79),
+                                 tax_rank = tax_rank,
+                                 nrAdapt=nrAdapt,
+                                 nrBurnIn=nrBurnIn,
+                                 nrSamples=nrSamples,
+                                 chains = chains,
+                                 nrThin = nrThin)
+  }
+}
+
+```
+
+
+```{r}
+cl <- parallel::makeCluster(8)
+doParallel::registerDoParallel(cl)
+diff_analysis_list_zif <- foreach::foreach(tree_obj = iter(list(obj1, obj1_rare ,obj2, obj2_rare,obj3, obj3_rare,obj4, obj4_rare)),
+                                           args = c("no_raref","raref", "no_raref","raref", "no_raref","raref", "no_raref","raref"),
+                                           .packages = c("rjags", "tidyverse", "coda", "ggmcmc"),
+                                           .verbose = T) %dopar%
+  
+  parallel.DA.Zif(obj = tree_obj, groups = c(79,79),
+                  data_type = args,
+                    tax_rank =  c("k", "p", "c", "o"),
+                    nrAdapt=1000,
+                    nrBurnIn=1000,
+                    nrSamples=5000,
+                    chains = 5,
+                    nrThin = 5)
+parallel::stopCluster(cl)
+
+save(diff_analysis_list_zif,file = "outputs/diff_analysis_list_zif.RData")
+save.image()
+
+```
+
+
+```{r}
+obj3$data$diff_analysis_table_zif <- diff_analysis_list_zif[[5]][[3]] 
+obj3_rare$data$diff_analysis_table_zif <- diff_analysis_list_zif[[6]][[3]]
+names(obj3$data$diff_analysis_table_zif)[1] = "taxon_id"
+names(obj3_rare$data$diff_analysis_table_zif)[1] = "taxon_id"
+
+obj3_rare$data$diff_analysis_table_zif %>%
+  mutate(beta_sign = case_when(
+    (signif == "NS")  ~ 0,
+    !convergence  ~ 0,
+   (signif == "sign") & convergence  ~ beta
+    )
+   )-> obj3_rare$data$diff_analysis_table_zif
+
+obj3$data$diff_analysis_table_zif %>%
+  mutate(beta_sign = case_when(
+    (signif == "NS")  ~ 0,
+    !convergence  ~ 0,
+   (signif == "sign") & convergence  ~ beta
+    )
+   ) -> obj3$data$diff_analysis_table_zif
+
+obj3%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = beta_sign, # difference between groups
+          node_color_interval = c(-max(abs(beta_sign)), max(abs(beta_sign))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC (beta)",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE"))
+
+obj3_rare%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = beta, # difference between groups
+          node_color_interval = c(-max(abs(beta)), max(abs(beta))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC (beta)",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE rare"))
+
+# accounting for significance and convergence
+obj3$data$diff_analysis_table_zif %>%
+  select(taxon_id, beta_sign) %>%
+  left_join(obj3_rare$data$diff_analysis_table_zif %>%
+            select(taxon_id, beta_sign), by ="taxon_id" )%>% 
+  ggplot()+
+  geom_point(aes(beta_sign.x, beta_sign.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  labs(x =" beta(logFC) no rarefaction", y ="beta(logFC) rarefaction")+
+  main_theme
+
+# without accounting for significance and convergence
+obj3$data$diff_analysis_table_zif %>%
+  select(taxon_id, beta) %>%
+  left_join(obj3_rare$data$diff_analysis_table_zif %>%
+            select(taxon_id, beta), by ="taxon_id" )%>% 
+  ggplot()+
+  geom_point(aes(beta.x, beta.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  labs(x =" beta(logFC) no rarefaction", y ="beta(logFC) rarefaction")+
+  main_theme
+
+obj3$data$diff_analysis_table %>%
+  select(taxon_id, logFC) %>%
+  left_join(obj3$data$diff_analysis_table_zif %>%
+            select(taxon_id, beta_sign), by ="taxon_id" ) %>% 
+  ggplot()+
+  geom_point(aes(logFC, -beta_sign),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  labs(x =" logFC No rarefaction", y ="Zif logFC no rarefaction")+
+  main_theme
+
+```
+
+This bayesian model use poisson log normal distribution
+Key Characteristics
+
+Poisson Component: The Poisson component represents the underlying count process, where the mean and variance are linked through the parameter λ (lambda).
+Lognormal Component: The log-normal component models the uncertainty in the Poisson parameter λ, introducing variability and skewness to the distribution.
+Compound Distribution: The Poisson-log-normal distribution is a compound distribution, where the Poisson distribution is conditioned on the log-normal distribution of λ.
+
+```{r}
+# log normal
+exp(rnorm(1000)) -> log_norm
+hist(log_norm, breaks =100)
+
+# normal
+hist(log(log_norm), breaks =100)
+
+# poisson log normal
+rpois(n = 1000,lambda = exp(rnorm(1000)))%>%
+  hist(breaks =100)
+```
+

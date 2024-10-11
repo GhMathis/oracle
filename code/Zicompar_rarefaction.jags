@@ -4,14 +4,14 @@ model{
 
 	for (j in 1:group[1]){ 				# for each sample of grp 1
 
-  			Y[i,j] ~ dpois(exp((phi[i,j] + log(N[j])) * pi[i,j]))
+  			Y[i,j] ~ dpois(exp((phi[i,j]) * pi[i,j]))
   			pi[i,j] ~ dbern(p[i]) 					# zero inflation (switch on/off)
   			phi[i,j] ~ dnorm(alpha[i], binTau[i]) 			# true abundances means and random effects due to overdispertion (log scale)
   		}
   	  	  
      	for (j in (group[1]+1):(group[1]+group[2])){ 	# for each sample of grp 2
 
-  			Y[i,j] ~ dpois(exp((phi[i,j]  + log(N[j]))* pi[i,j])) 
+  			Y[i,j] ~ dpois(exp((phi[i,j])* pi[i,j])) 
   			pi[i,j] ~ dbern(p[i]*beta_p[i])					# zero inflation (switch on/off)
   			phi[i,j] ~ dnorm(alpha[i] + beta[i], binTau[i]) 	# true abundances mean, abudances mean differences and random effects due to overdispertion (log scale)
 
