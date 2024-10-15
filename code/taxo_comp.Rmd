@@ -32,6 +32,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r packages, message=FALSE}
 library(tidyverse)
+library(ggforce)
 library(ade4) # Coinertia
 library(vegan) # Rarefaction
 library(ggrepel)
@@ -177,19 +178,19 @@ metag1_decont_table %>%
    select(-c(BU_TS_15_R1_B, BU_TS_15_R2_B)) -> meta_g_b_decond_table # remove sample because missing for metaG
 
 ```
-## Diverities analisys
+## Diversity analysis
 
 ### Rarefaction function
 
 ```{r}
-rarefaction.func = function(df,rar_sample, n_rare = 100, rarcur = T){
+rarefaction.func <- function(df,rar_sample, n_rare = 100, rarcur = T){
   
   
   if(rarcur){ # {{ if rarefaction curve needed}}
     metab1_decont_table %>%
       select(starts_with("BU")) %>%
       t() %>%
-      rarecurve(step = 20, sample = rar_sample, col = "blue", cex = 0.6)
+      vegan::rarecurve(step = 20, sample = rar_sample, col = "blue", cex = 0.6)
   }
    df %>%
     select(starts_with("BU")) %>%
@@ -200,7 +201,7 @@ rarefaction.func = function(df,rar_sample, n_rare = 100, rarcur = T){
   df %>%
     select(starts_with("BU")) %>%
     t() %>%
-    rrarefy(rar_sample) %>%
+    vegan::rrarefy(rar_sample) %>%
     t() + df_rarefy -> df_rarefy
     
   }
@@ -247,6 +248,9 @@ lib_size %>%
 set.seed(1000)
 meta_g_b_decond_table %>%
   rarefaction.func(rar_sample = min_ech, rarcur = T) -> meta_g_b_decond_table_rare
+
+meta_g_b_decond_table_rare %>% 
+  select(starts_with("BU")) %>% colSums
 
 ```
 
@@ -306,6 +310,7 @@ df_diversites <- dR %>%
   select(-samples) %>%
   pivot_wider(names_from = method, values_from = value )
 
+rm(dREr,dREa,eDRr,eDRa)
 ```
 
 ```{r}
@@ -356,9 +361,6 @@ plot(1:length(colSums (temp!=0 )), colSums (temp!=0 ))
 ### Beta diversities
 
 ```{r}
-
-library(ggforce)
-
 meta_g_b_decond_table_rare %>%
   select(starts_with("BU")) %>%
   colnames() %>%
@@ -384,7 +386,8 @@ beta_div[[1]]%>%
   ggplot()+
   #facet_wrap(~group2 * group1)+
   geom_sina(aes(group_comp, value),maxwidth = 1, alpha = 0.5, cex = 5, jitter_y = F) +
-  labs(x = "method compaired", y = "beta diversity")+
+  labs(x = "compared method", y = "beta diversity") +
+  scale_y_continuous(limits = c(1,2))+
   main_theme
 
 
@@ -413,7 +416,7 @@ beta_div_merge[[1]]%>%
   ggplot()+
   #facet_wrap(~group2 * group1)+
   geom_sina(aes("G vs B", value),maxwidth = 0.4, alpha = 0.5, cex = 5, jitter_y = F) +
-  labs(x = "method compaired", y = "beta diversity")+
+  labs(x = "compared method", y = "beta diversity")+
   main_theme
 
 ```
@@ -524,8 +527,13 @@ for(n in 1:n_sim){
   for(d in 1:depth){
     temp <- runif(3,1,2)
     val = val*temp
-    }
-  amplifi_df[n,] =val
+  }
+  true_com <- c(rep("A",val[1]), rep("B",val[2]), rep("C",val[3]))
+  ech =  sample(true_com, 200, replace = F)
+  n_A = sum(ech == "A")
+  n_B = sum(ech == "B")
+  n_C = sum(ech == "C")
+  amplifi_df[n,] =c(n_A, n_B, n_C)
 }
 
 amplifi_df%>%
@@ -541,8 +549,8 @@ ggplot(df_amplifi_summar)+
   geom_point(aes(mean_sp, var_sp))+
   geom_abline(intercept = 0, slope = 1, col = "red", size = 1.5, linetype = 2)+
   geom_abline(intercept = 0, slope = 2, col = "purple", size = 1.5, linetype = 2)+
-  scale_x_log10(limits = c(1,10^10))+
-  scale_y_log10(limits = c(1,10^10))
+  scale_x_log10(limits = c(1,1000))+
+  scale_y_log10(limits = c(1,1000))
 ```
 
 
@@ -1511,6 +1519,7 @@ obj1$data$diff_analysis_table %>%
   geom_abline(intercept = 0, slope = 1, linewidth = 2, col = "red")+
   labs(x =" logFC No rarefaction", y ="Zif logFC no rarefaction")+
   main_theme
+save.image()
 ```
 
 ### R1_G vs R2_G

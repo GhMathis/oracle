@@ -1683,35 +1683,6 @@ beta
 
 
 ```{r}
-set.seed(1000)
-n_sample = 20
-n_taxa = 10 
-alpha = rnorm(n_taxa,log(20)) # True abundance mean
-
-p = rep(0.8, n_taxa) # probability of presence
-pi_ = matrix(rbinom(n_taxa*n_sample,1,p ),nrow = n_taxa, ncol = n_sample)
-rowSums(pi_)/100 #should be around 0.8
-
-sigma = round(rgamma(n_taxa, 2,2),2) # taxa specific over-dispersion parameter
-u = matrix(rnorm(n_taxa*n_sample, 0, sigma), nrow = n_taxa, ncol = n_sample) # taxa- and sample-specific random effect
-
-beta = c(rep(log(0.25), 4), rep(log(1),2), rep(log(4), 4)) # scaling detection factor between group for each taxa
-group = c(rep(0,n_sample/2),rep(1,n_sample/2))
-
-lambda = matrix(NA,nrow = n_taxa, ncol = n_sample)
-Y = matrix(NA,nrow = n_taxa, ncol = n_sample)
-for (t in 1:n_taxa){
-  for(s in 1:n_sample){
-  
-  lambda[t,s] =  exp(alpha[t] + group[s]*beta[t])*pi_[t,s]
-  Y[t,s] = rpois(1, lambda[t,s])
-  }
-}
-hist(Y, breaks = 40)
-
-```
-
-```{r}
 modelName3 <- "
 model{
   for (i in 1:D[1]) {    # For each OTU
