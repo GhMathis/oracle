@@ -37,10 +37,15 @@ library(vegan) # Rarefaction
 library(ggrepel)
 library(metacoder)
 library(phyloseq)
+library(hilldiv)
 
 library(rjags)
 library(ggmcmc)
 library(coda)
+
+library(parallel)
+library(doParallel)
+library(foreach)
 
 main_theme = theme_minimal()+
   theme(line = element_blank(), 
@@ -172,6 +177,7 @@ metag1_decont_table %>%
    select(-c(BU_TS_15_R1_B, BU_TS_15_R2_B)) -> meta_g_b_decond_table # remove sample because missing for metaG
 
 ```
+## Diverities analisys
 
 ### Rarefaction function
 
@@ -243,11 +249,10 @@ meta_g_b_decond_table %>%
   rarefaction.func(rar_sample = min_ech, rarcur = T) -> meta_g_b_decond_table_rare
 
 ```
-### Diversity comparison
+
+### Alpha Diversity comparison
 
 ```{r}
-library(hilldiv)
-
 #  richness
 dR <- meta_g_b_decond_table_rare %>% 
   column_to_rownames("OTU") %>%
@@ -306,6 +311,7 @@ df_diversites <- dR %>%
 ```{r}
 df_diversites%>%
   ggplot()+
+  geom_abline(slope = 1, col = "red")+
   geom_point(aes(R1_B,R2_B))+
   geom_smooth(aes(R1_B,R2_B), method = "lm")+
   facet_wrap(~type, scale = "free")+
@@ -313,13 +319,15 @@ df_diversites%>%
 
 df_diversites%>%
   ggplot()+
+  geom_abline(slope = 1, col = "red")+
   geom_point(aes(R1_G,R2_G))+
-    geom_smooth(aes(R1_G,R2_G), method = "lm")+
+  geom_smooth(aes(R1_G,R2_G), method = "lm")+
   facet_wrap(~type, scale = "free")+
   main_theme
 
 df_diversites%>%
   ggplot()+
+  geom_abline(slope = 1, col = "red")+
   geom_point(aes(R1_B,R1_G))+
   geom_smooth(aes(R1_B,R1_G), method = "lm")+
   facet_wrap(~type, scale = "free")+
@@ -327,11 +335,90 @@ df_diversites%>%
 
 df_diversites%>%
   ggplot()+
+  geom_abline(slope = 1, col = "red")+
   geom_point(aes(R2_B,R2_G))+
   geom_smooth(aes(R2_B,R2_G), method = "lm")+
   facet_wrap(~type, scale = "free")+
   main_theme
 ```
+
+- Diversities are really similar between R1 and R2 of metabarcoding. Both strand approximate the same number of taxa and same Eveness.
+- Richness is a bit higher in R2 of metabargenomic compaire to R1 (R2 detetect approximately 20 more taxa than R1). 
+There is a small positive correlation of evenness between the 2 stand (Surprising !)
+- There is almost no correlation of richness, diversities and evneness for comparisons between metabarcoding and metagenomics
+
+```{r}
+meta_g_b_decond_table_rare %>% select(starts_with("BU")) -> temp
+plot(1:length(colSums (temp!=0 )), colSums (temp!=0 ))
+```
+
+
+### Beta diversities
+
+```{r}
+
+library(ggforce)
+
+meta_g_b_decond_table_rare %>%
+  select(starts_with("BU")) %>%
+  colnames() %>%
+  as.data.frame() %>%
+  rename(sample = ".") %>%
+  mutate(groups = str_extract(sample, "R\\d_[BG]")) -> hierarchie_meta_g_b
+  
+meta_g_b_decond_table_rare %>%
+  select(starts_with("BU")) %>% 
+  hilldiv::pair_dis(qvalue=0, level = "1") -> beta_div
+
+beta_div[[1]]%>%
+  as.data.frame()%>%
+  rownames_to_column("sample")%>%
+  pivot_longer(-sample) %>%
+  filter(!is.na(value)) %>%
+  mutate(group1 = str_extract(sample, "R\\d_[BG]"),
+         group2 = str_extract(name, "R\\d_[BG]"),
+         soil_code1 = str_extract(sample, "BU_[A-Z]+_\\d+"),
+         soil_code2 = str_extract(name, "BU_[A-Z]+_\\d+"),
+         group_comp = paste(group1,"x",group2)) %>%
+  filter(soil_code1 == soil_code2) %>%
+  ggplot()+
+  #facet_wrap(~group2 * group1)+
+  geom_sina(aes(group_comp, value),maxwidth = 1, alpha = 0.5, cex = 5, jitter_y = F) +
+  labs(x = "method compaired", y = "beta diversity")+
+  main_theme
+
+
+```
+
+
+```{r}
+meta_g_b_decond_table_rare %>%
+  select(starts_with("BU"), OTU) %>% 
+  pivot_longer(-OTU)%>%
+  mutate(name = str_remove(name, "_R\\d"))%>%
+  group_by(name, OTU)%>%
+  summarise(value = sum(value))%>%
+  pivot_wider(names_from = name, values_from = value) %>% select(starts_with("BU")) %>%
+  hilldiv::pair_dis(qvalue=0, level = "1") -> beta_div_merge
+
+
+beta_div_merge[[1]]%>%
+  as.data.frame()%>%
+  rownames_to_column("sample")%>%
+  pivot_longer(-sample) %>%
+  filter(!is.na(value)) %>%
+  mutate(soil_code1 = str_extract(sample, "BU_[A-Z]+_\\d+"),
+         soil_code2 = str_extract(name, "BU_[A-Z]+_\\d+")) %>%
+  filter(soil_code1 == soil_code2) %>%
+  ggplot()+
+  #facet_wrap(~group2 * group1)+
+  geom_sina(aes("G vs B", value),maxwidth = 0.4, alpha = 0.5, cex = 5, jitter_y = F) +
+  labs(x = "method compaired", y = "beta diversity")+
+  main_theme
+
+```
+
+## Variance and mean analisys
 
 ### Variance and mean distribution of taxon (genus) per method 
 
@@ -352,8 +439,6 @@ summarise_df %>%
   geom_histogram(aes(x = reads_mean))+
   scale_x_log10()
 
-summarise_df$reads_var
-
 summarise_df %>%
   ggplot()+
   facet_wrap(~method)+
@@ -362,7 +447,9 @@ summarise_df %>%
 
 ```
 
-Meta genomic miss more OTU that meta barcoding. Without accounting OTU at 0 abundances, mean and variance distribution of OTU number of reads look like similar for both method. Now I will check the relation between variance and mean to see if data follow a poisson distribution without zero. (In poisson distib mean = variance)
+Metagenomic miss more OTU that metabarcoding. Without accounting OTU at 0 abundances, mean and variance distribution of OTU number of reads look like similar for both method. Now I will check the relation between variance and mean to see if data follow a poisson distribution without zero. (In poisson distib mean = variance)
+
+### Relation between variance and mean 
 
 ```{r}
 mod_mean_v_var <- lm(log10(reads_var)~log10(reads_mean)*method,
@@ -379,7 +466,7 @@ summarise_df%>%
   ggplot()+
   facet_wrap(~method)+
   geom_point(aes(log10(reads_mean), log10(reads_var)))+
-  geom_smooth(aes(log10(reads_mean), log10(reads_var)), size= 1.5, method = "lm")+
+  geom_smooth(aes(log10(reads_mean), log10(reads_var)), linewidth= 1.5, method = "lm")+
   geom_abline(aes(intercept = intercept, slope =1), col = "red", size = 1.5, linetype = 2)+
   geom_abline(aes(intercept = intercept, slope =2), col = "purple", size = 1.5, linetype = 2)+
   scale_x_continuous(limits = c(-2, 7))+
@@ -390,7 +477,9 @@ temp
 
 ```
 
-For a $log_{10}(\mu) \approx 0 \rigtharrow log_{10}(\sigma^2) \approx 1.44$ for all method exept 2_G ($\log_{10}(mu_0) = 1.84$) (after species of mean and var under 1 are removed) (IDK what to interpret from that). The slope is arround 1 for R1_G and R2_G. For metagenomic species means are proportionnal to there variance ($\mu \prop \sigma^2$). For metabarcoding slopes are 1.34 for R1_B and R2_B, this tells us that for this method variances are propotional to a power law of means ($\mu^n \prop \sigma^2$ with $n = 1.35$ here)
+The slopes are around 1 for R1_G and R2_G. For metagenomic species means are proportionnal to there variance ($\mu \prop \sigma^2$). For metabarcoding slopes are 1.40 for R1_B and R2_B, this tells us that for this method variances are propotional to a power law of means ($\mu^n \propto \sigma^2$ with $n = 1.40$ here)
+
+### Simulation of 2 prossec leading to different relation between variance and mean 
 
 ```{r}
 true_com <- c(rep("A",1000), rep("B",100), rep("C",10))
@@ -399,6 +488,8 @@ true_com <- c(rep("A",1000), rep("B",100), rep("C",10))
 n_sim = 1000
 count_df = data.frame(A = rep(NA,n_sim), B = rep(NA,n_sim), C = rep(NA,n_sim))
 prop_df = data.frame(A = rep(NA,n_sim), B = rep(NA,n_sim), C = rep(NA,n_sim))
+
+# Sampling function
 for(n in 1:n_sim){
   ech =  sample(true_com, 200, replace = F)
   n_A = sum(ech == "A")
@@ -408,7 +499,7 @@ for(n in 1:n_sim){
   prop_df[n,] =c(n_A, n_B, n_C)/200
   
 }
-prop_df%>%
+count_df%>%
   pivot_longer(everything(), names_to = "sp", values_to = "abund") %>%
   group_by(sp) %>%
   summarise(
@@ -421,11 +512,13 @@ ggplot(df_summar)+
   geom_point(aes(mean_sp, var_sp))+
   geom_abline(intercept = 0, slope = 1, col = "red", size = 1.5, linetype = 2)+
   geom_abline(intercept = 0, slope = 2, col = "purple", size = 1.5, linetype = 2)+
-  scale_x_log10()+
-  scale_y_log10()
+  scale_x_log10(limits = c(1,1000))+
+  scale_y_log10(limits = c(1,1000))
 
+### Multiplicative 
 amplifi_df = data.frame(A = rep(NA,n_sim), B = rep(NA,n_sim), C = rep(NA,n_sim))
 depth = 10
+# Amplification function
 for(n in 1:n_sim){
   val = c(1000,100,10)
   for(d in 1:depth){
@@ -434,6 +527,7 @@ for(n in 1:n_sim){
     }
   amplifi_df[n,] =val
 }
+
 amplifi_df%>%
   pivot_longer(everything(), names_to = "sp", values_to = "abund") %>%
   group_by(sp) %>%
@@ -447,15 +541,15 @@ ggplot(df_amplifi_summar)+
   geom_point(aes(mean_sp, var_sp))+
   geom_abline(intercept = 0, slope = 1, col = "red", size = 1.5, linetype = 2)+
   geom_abline(intercept = 0, slope = 2, col = "purple", size = 1.5, linetype = 2)+
-  scale_x_log10()+
-  scale_y_log10()
+  scale_x_log10(limits = c(1,10^10))+
+  scale_y_log10(limits = c(1,10^10))
 ```
 
 
 
 
 
-## Metacoder and phyloseq
+## Taxa between method comparision analasys (Metacoder and phyloseq)
 
 Function that compute differential gene analysis with edgeR method from a phyloseq object
 
@@ -606,15 +700,14 @@ make.tax.tree.comp = function(df, pair){
 pal = colorspace::diverging_hcl(3, palette = "Tropic")
 meta_g_b_decond_table %>%
   make.tax.tree.comp(pair = c("R1_B","R2_B")) -> obj1
-meta_g_b_decond_table_rare%>%
-  select(ends_with("R1_B")) 
+
 meta_g_b_decond_table_rare %>%
   make.tax.tree.comp(pair = c("R1_B","R2_B")) -> obj1_rare
 ```
 
+####  Wilcox 2 by 2 comparison
 
 ```{r}
-
 obj1 %>%
   metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
   metacoder::heat_tree(node_label = taxon_names,
@@ -638,7 +731,10 @@ obj1_rare %>%
           node_color_axis_label = "Log 2 ratio of median counts",
           layout = "davidson-harel", initial_layout = "reingold-tilford",
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2), "(wilcox/rare)"))
+```
 
+
+```{r}
 sapply(obj1$taxa, function(x) as.character(x$get_name())) %>% 
   as.data.frame %>%
   rename(taxa = ".")%>%
@@ -663,20 +759,6 @@ obj1$data$diff_table %>%
 ```
 
 
-Outlier :
-
-```{r}
-obj1$data$tax_abund %>%
-   filter(taxon_id == "afs") %>%
-   select(ends_with("R1_B")) -  obj1$data$tax_abund %>%
-                                   filter(taxon_id == "afs") %>%
-                                   select(ends_with("R2_B")) 
-obj1_rare$data$tax_abund %>%
-   filter(taxon_id == "afs") %>%
-   select(ends_with("R1_B")) - obj1_rare$data$tax_abund %>%
-                                 filter(taxon_id == "afs") %>%
-                                 select(ends_with("R2_B")) 
-```
 
 #### Differential expression of replicated count data
 
@@ -704,7 +786,10 @@ obj1_rare %>%
           node_color_axis_label = "logFC",
           layout = "davidson-harel", initial_layout = "reingold-tilford",
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE rare"))
+```
 
+
+```{r}
 sapply(obj1$taxa, function(x) as.character(x$get_name())) %>% 
   as.data.frame %>%
   rename(taxa = ".") %>%
@@ -739,10 +824,9 @@ meta_g_b_decond_table_rare %>%
 
 Different pattern for metaG than metaB here in phylum *Protobacteia* the class *Gammaprotobacteria* and *Alphaprotobacteria* are both more detected by R1. *Fimicutes* and *Actinobacteria* are also better detected by R1
 
-#### Better version with statistical significance
+####  Wilcox 2 by 2 comparison
 
 ```{r}
-
 obj2 %>%
   metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE) %>%
   metacoder::heat_tree(node_label = taxon_names,
@@ -766,8 +850,10 @@ obj2_rare %>%
           node_color_axis_label = "Log 2 ratio of median counts",
           layout = "davidson-harel", initial_layout = "reingold-tilford",
           title = paste(unique(treatment_1) ,"vs", unique(treatment_2), "(wilcox/rare)"))
+```
 
 
+```{r}
 sapply(obj2$taxa, function(x) as.character(x$get_name())) %>% 
   as.data.frame %>%
   rename(taxa = ".")%>%
@@ -841,7 +927,7 @@ meta_g_b_decond_table_rare %>%
   make.tax.tree.comp(pair = c("R1_B","R1_G")) -> obj3_rare
 ```
 
-#### Better version with statistical significance
+####  Wilcox 2 by 2 comparison
 
 ```{r}
 
@@ -921,7 +1007,7 @@ meta_g_b_decond_table_rare %>%
 
 ```
 
-#### Better version with statistical significance
+#### Wilcox 2 by 2 comparison
 
 ```{r}
 
@@ -989,7 +1075,7 @@ obj4$data$diff_analysis_table %>%
   main_theme
 ```
 
-Zero inflation might bias the variance of taxa abundance in each method thus scaling factors are maybe under estimated
+Zero inflation might bias the variance of taxa abundance in each method thus scaling factors may be badly estimated
 
 ```{r}
 data.frame(taxon_rank = sapply(names(obj1$taxa), function(x) obj1$taxa[[x]]$rank$name)) %>%
@@ -1004,14 +1090,29 @@ tax_abund %>%
     select(starts_with("BU"), taxon_id) %>%
     column_to_rownames("taxon_id") %>%
     as.matrix %>%
-    hist(breaks = 50)
+    hist(breaks = 50, main = "taxon_rank : kindom")
+
+tax_abund %>%
+    filter(taxon_rank == "p") %>%
+    select(starts_with("BU"), taxon_id) %>%
+    column_to_rownames("taxon_id") %>%
+    as.matrix %>%
+    hist(breaks = 50, main = "taxon_rank :phylum")
+
+tax_abund %>%
+    filter(taxon_rank == "c") %>%
+    select(starts_with("BU"), taxon_id) %>%
+    column_to_rownames("taxon_id") %>%
+    as.matrix %>%
+    hist(breaks = 50, main = "taxon_rank : class")
 
 ```
 
-### bayesian poisson DGE zero inflated
+### Bayesian lognormal DGE zero inflated
 
-Function that compute differential analysis (bayesian) with zero inflated parameters and return an object compatible with metacoder,
+Function that compute differential analysis (Bayesian) with zero inflated parameters and return an object compatible with metacoder
 to plot it on the taxonomic comparison tree
+
 ```{r}
 differential.analysis.Zif <- function(obj = obj,
                                         groups = c(79,79), #Indicates the size of each group samples
@@ -1152,6 +1253,8 @@ differential.analysis.Zif <- function(obj = obj,
 }
 ```
 
+Function for rarefied data. Same function than the previous one but the Bayesian model doesn't contain a standardization by taxa abundance sum per sample (used to control sampling effort)
+
 ```{r}
 differential.analysis.Zif.raref <- function(obj = obj,
                                         groups = c(79,79), #Indicates the size of each group samples
@@ -1275,11 +1378,9 @@ differential.analysis.Zif.raref <- function(obj = obj,
 }
 ```
 
+### Function to compute bayesian model in parallel
 
 ```{r}
-library(parallel)
-library(doParallel)
-library(foreach)
 obj1$data$tax_data
 obj1_rare$data$tax_data
 differential.analysis.Zif.raref(obj = obj1_rare, groups = c(79,79),
@@ -1314,16 +1415,21 @@ parallel.DA.Zif <- function(obj , groups, tax_rank, data_type,
 
 ```
 
+### Compute bayesian model
 
 ```{r}
-cl <- parallel::makeCluster(8)
-doParallel::registerDoParallel(cl)
-diff_analysis_list_zif <- foreach::foreach(tree_obj = iter(list(obj1, obj1_rare ,obj2, obj2_rare,obj3, obj3_rare,obj4, obj4_rare)),
+
+if(file.exists("outputs/diff_analysis_list_zif.RData")){
+  load("outputs/diff_analysis_list_zif.RData")
+}else{
+  print("go get a coffee.... it will probably take the day")
+  cl <- parallel::makeCluster(8)
+  doParallel::registerDoParallel(cl)
+  diff_analysis_list_zif <- foreach::foreach(tree_obj = iter(list(obj1, obj1_rare ,obj2, obj2_rare,obj3, obj3_rare,obj4, obj4_rare)),
                                            args = c("no_raref","raref", "no_raref","raref", "no_raref","raref", "no_raref","raref"),
                                            .packages = c("rjags", "tidyverse", "coda", "ggmcmc"),
                                            .verbose = T) %dopar%
-  
-  parallel.DA.Zif(obj = tree_obj, groups = c(79,79),
+    parallel.DA.Zif(obj = tree_obj, groups = c(79,79),
                   data_type = args,
                     tax_rank =  c("k", "p", "c", "o"),
                     nrAdapt=1000,
@@ -1331,36 +1437,122 @@ diff_analysis_list_zif <- foreach::foreach(tree_obj = iter(list(obj1, obj1_rare 
                     nrSamples=5000,
                     chains = 5,
                     nrThin = 5)
-parallel::stopCluster(cl)
+    parallel::stopCluster(cl)
+    
+    save(diff_analysis_list_zif,file = "outputs/diff_analysis_list_zif.RData")
+    save.image()
+}
+  
 
-save(diff_analysis_list_zif,file = "outputs/diff_analysis_list_zif.RData")
-save.image()
 
 ```
 
 
 ```{r}
+for(i in 1:8){
+  names(  diff_analysis_list_zif[[i]][[3]])[1] <- "taxon_id"
+  
+  diff_analysis_list_zif[[i]][[3]] %>%
+    mutate(beta_sign = case_when(
+      (signif == "NS")  ~ 0,
+      !convergence  ~ 0,
+     (signif == "sign") & convergence  ~ beta
+      )
+     ) -> diff_analysis_list_zif[[i]][[3]]
+  }
+
+obj1$data$diff_analysis_table_zif <- diff_analysis_list_zif[[1]][[3]] 
+obj1_rare$data$diff_analysis_table_zif <- diff_analysis_list_zif[[2]][[3]]
+
+obj2$data$diff_analysis_table_zif <- diff_analysis_list_zif[[3]][[3]] 
+obj2_rare$data$diff_analysis_table_zif <- diff_analysis_list_zif[[4]][[3]]
+
 obj3$data$diff_analysis_table_zif <- diff_analysis_list_zif[[5]][[3]] 
 obj3_rare$data$diff_analysis_table_zif <- diff_analysis_list_zif[[6]][[3]]
-names(obj3$data$diff_analysis_table_zif)[1] = "taxon_id"
-names(obj3_rare$data$diff_analysis_table_zif)[1] = "taxon_id"
 
-obj3_rare$data$diff_analysis_table_zif %>%
-  mutate(beta_sign = case_when(
-    (signif == "NS")  ~ 0,
-    !convergence  ~ 0,
-   (signif == "sign") & convergence  ~ beta
-    )
-   )-> obj3_rare$data$diff_analysis_table_zif
+obj4$data$diff_analysis_table_zif <- diff_analysis_list_zif[[7]][[3]] 
+obj4_rare$data$diff_analysis_table_zif <- diff_analysis_list_zif[[8]][[3]]
+```
 
-obj3$data$diff_analysis_table_zif %>%
-  mutate(beta_sign = case_when(
-    (signif == "NS")  ~ 0,
-    !convergence  ~ 0,
-   (signif == "sign") & convergence  ~ beta
-    )
-   ) -> obj3$data$diff_analysis_table_zif
+### R1_B vs R2_B
 
+```{r}
+
+obj1%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = beta_sign, # difference between groups
+          node_color_interval = c(-max(abs(beta_sign)), max(abs(beta_sign))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC (beta)",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"bayes"))
+
+# without accounting for significance and convergence
+obj1$data$diff_analysis_table_zif %>%
+  select(taxon_id, beta) %>%
+  left_join(obj1_rare$data$diff_analysis_table_zif %>%
+            select(taxon_id, beta), by ="taxon_id" )%>% 
+  ggplot()+
+  geom_point(aes(beta.x, beta.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, linewidth = 2, col = "red")+
+  labs(x =" beta(logFC) no rarefaction", y ="beta(logFC) rarefaction")+
+  main_theme
+
+# with significance and convergence
+obj1$data$diff_analysis_table %>%
+  select(taxon_id, logFC) %>%
+  left_join(obj1$data$diff_analysis_table_zif %>%
+            select(taxon_id, beta_sign), by ="taxon_id" ) %>% 
+  ggplot()+
+  geom_point(aes(logFC, -beta_sign),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, linewidth = 2, col = "red")+
+  labs(x =" logFC No rarefaction", y ="Zif logFC no rarefaction")+
+  main_theme
+```
+
+### R1_G vs R2_G
+
+```{r}
+obj2%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = beta_sign, # difference between groups
+          node_color_interval = c(-max(abs(beta_sign)), max(abs(beta_sign))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC (beta)",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"bayes"))
+# without accounting for significance and convergence
+obj2$data$diff_analysis_table_zif %>%
+  select(taxon_id, beta) %>%
+  left_join(obj2_rare$data$diff_analysis_table_zif %>%
+            select(taxon_id, beta), by ="taxon_id" )%>% 
+  ggplot()+
+  geom_point(aes(beta.x, beta.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, linewidth = 2, col = "red")+
+  labs(x =" beta(logFC) no rarefaction", y ="beta(logFC) rarefaction")+
+  main_theme
+
+# with significance and convergence
+obj2$data$diff_analysis_table %>%
+  select(taxon_id, logFC) %>%
+  left_join(obj2$data$diff_analysis_table_zif %>%
+            select(taxon_id, beta_sign), by ="taxon_id" ) %>% 
+  ggplot()+
+  geom_point(aes(logFC, -beta_sign),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, linewidth = 2, col = "red")+
+  labs(x =" logFC No rarefaction", y ="Zif logFC no rarefaction")+
+  main_theme
+```
+
+### R1_B vs R1_G
+
+```{r}
 obj3%>%
   metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
   metacoder::heat_tree(node_label = taxon_names,
@@ -1371,31 +1563,7 @@ obj3%>%
           node_size_axis_label = "OTU count",
           node_color_axis_label = "logFC (beta)",
           layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE"))
-
-obj3_rare%>%
-  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
-  metacoder::heat_tree(node_label = taxon_names,
-          node_size = n_obs, # number of OTUs
-          node_color = beta, # difference between groups
-          node_color_interval = c(-max(abs(beta)), max(abs(beta))), # symmetric interval
-          node_color_range = pal, # diverging colors
-          node_size_axis_label = "OTU count",
-          node_color_axis_label = "logFC (beta)",
-          layout = "davidson-harel", initial_layout = "reingold-tilford",
-          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"DGE rare"))
-
-# accounting for significance and convergence
-obj3$data$diff_analysis_table_zif %>%
-  select(taxon_id, beta_sign) %>%
-  left_join(obj3_rare$data$diff_analysis_table_zif %>%
-            select(taxon_id, beta_sign), by ="taxon_id" )%>% 
-  ggplot()+
-  geom_point(aes(beta_sign.x, beta_sign.y),size = 3, alpha =0.6)+
-  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
-  labs(x =" beta(logFC) no rarefaction", y ="beta(logFC) rarefaction")+
-  main_theme
-
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"bayes"))
 # without accounting for significance and convergence
 obj3$data$diff_analysis_table_zif %>%
   select(taxon_id, beta) %>%
@@ -1403,23 +1571,63 @@ obj3$data$diff_analysis_table_zif %>%
             select(taxon_id, beta), by ="taxon_id" )%>% 
   ggplot()+
   geom_point(aes(beta.x, beta.y),size = 3, alpha =0.6)+
-  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  geom_abline(intercept = 0, slope = 1, linewidth = 2, col = "red")+
   labs(x =" beta(logFC) no rarefaction", y ="beta(logFC) rarefaction")+
   main_theme
 
+# with significance and convergence
 obj3$data$diff_analysis_table %>%
   select(taxon_id, logFC) %>%
   left_join(obj3$data$diff_analysis_table_zif %>%
             select(taxon_id, beta_sign), by ="taxon_id" ) %>% 
   ggplot()+
   geom_point(aes(logFC, -beta_sign),size = 3, alpha =0.6)+
-  geom_abline(intercept = 0, slope = 1, size = 2, col = "red")+
+  geom_abline(intercept = 0, slope = 1, linewidth = 2, col = "red")+
   labs(x =" logFC No rarefaction", y ="Zif logFC no rarefaction")+
   main_theme
-
 ```
 
-This bayesian model use poisson log normal distribution
+### R2_B vs R2_G
+
+```{r}
+obj4%>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_color = beta_sign, # difference between groups
+          node_color_interval = c(-max(abs(beta_sign)), max(abs(beta_sign))), # symmetric interval
+          node_color_range = pal, # diverging colors
+          node_size_axis_label = "OTU count",
+          node_color_axis_label = "logFC (beta)",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title = paste(unique(treatment_1) ,"vs", unique(treatment_2),"bayes"))
+# without accounting for significance and convergence
+obj4$data$diff_analysis_table_zif %>%
+  select(taxon_id, beta) %>%
+  left_join(obj4_rare$data$diff_analysis_table_zif %>%
+            select(taxon_id, beta), by ="taxon_id" )%>% 
+  ggplot()+
+  geom_point(aes(beta.x, beta.y),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, linewidth = 2, col = "red")+
+  labs(x =" beta(logFC) no rarefaction", y ="beta(logFC) rarefaction")+
+  main_theme
+
+# with significance and convergence
+obj4$data$diff_analysis_table %>%
+  select(taxon_id, logFC) %>%
+  left_join(obj4$data$diff_analysis_table_zif %>%
+            select(taxon_id, beta_sign), by ="taxon_id" ) %>% 
+  ggplot()+
+  geom_point(aes(logFC, -beta_sign),size = 3, alpha =0.6)+
+  geom_abline(intercept = 0, slope = 1, linewidth = 2, col = "red")+
+  labs(x =" logFC No rarefaction", y ="Zif logFC no rarefaction")+
+  main_theme
+```
+
+
+## Annexe
+
+This Bayesian model use poisson log normal distribution
 Key Characteristics
 
 Poisson Component: The Poisson component represents the underlying count process, where the mean and variance are linked through the parameter λ (lambda).
