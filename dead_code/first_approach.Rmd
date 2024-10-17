@@ -127,7 +127,7 @@ read_tsv("data/Oracle_soils_16S_341F_785R_87_samples.OTU.filtered.cleaved.nosubs
   rename_with(~sub("\\_8$", "_08", .)) %>%
   rename_with(~sub("\\_9$", "_09", .)) %>%
   #{{sequences with "No_hit" has to be deleted}}
-  filter(grepl("^Bacteria|^Archaea",taxonomy)) %>%
+  filter(grepl("Bacteria|Archaea",taxonomy)) %>%
   separate(taxonomy, bact_taxonomic_levels, sep = "[|]", extra = "drop") %>%
   #{{sequences affiliated to chloroplast and mitonchondria are excluded}}
   filter(order != "Chloroplast", family != "Mitochondria")%>%
@@ -248,16 +248,14 @@ bact_ASV_decont <- replace(bact_ASV, bact_ASV == 0, NA) %>%
 ```
 
 ## Fist approach : select only known species
-```{r echo = T, results = 'hide'}
 
+```{r echo = T, results = 'hide'}
 bact_tax%>%
   filter(!str_detect(species, "unidentified"))-> bact_tax_known
 
 bact_tax_known[duplicated(bact_tax_known$species),]
 bact_ASV_decont%>%
   filter(as.character(OTU) %in% bact_tax_known$OTU)-> bact_ASV_decont_known
-
-
 
 bact_ASV_decont_known%>%
   pivot_longer(starts_with("BU"), names_to = "soil_code", values_to = "read")%>%
@@ -521,7 +519,6 @@ soil_standard_rank[soil2_id$id,var_soil_id$id]%>%
 
 soil_val[soil2_id$id,var_soil_id$id]%>%
   as.matrix()%>%
-  t()%>%
   plotMyMatrix(dimLabels =  c("soil_code", "Soil var"), plotOptions = list(rowNames = T,colNames = T))+
   theme(
     legend.position="none",
@@ -624,6 +621,7 @@ plotMyMultipartiteMatrix(list(netvarnieb, netvarsorgh), plotOptions = list(rowNa
 ```{r}
 plot(sbm_variety)
 ```
+
 ```{r}
 sbm_variety$storedModels %>%  ggplot() + aes(x = nbBlocks, y = ICL)  + geom_line() + geom_point(alpha = 0.5)
 ```
@@ -641,10 +639,12 @@ smb_varsorg_test <- estimateBipartiteSBM(varsorgh, model = "bernoulli",
 plot(smb_varsorg_test)
 
 ```
+
 ```{r}
 colSums(varsorgh)
 colSums(varnieb)
 ```
+
 ```{r}
 cbind(varnieb, varsorgh)%>%
   data.frame()%>%
@@ -674,6 +674,7 @@ cult_var_df%>%
   summarise(n= n())%>%
   ggplot()+
   geom_point(aes(cult_var, n), cex = 3)+
+  scale_y_continuous(limits = c(0,30))+
   main_theme+
   theme(axis.text.x = element_text(colour = "black", size=12, face="italic", angle = 45, vjust = 1, hjust = 1))
 
@@ -682,6 +683,7 @@ cluster_df%>%
 ```
 
 ## Cultural practices
+
 ### SBM
 
 ```{r}
@@ -750,8 +752,6 @@ agri_practice_quanti%>%
 
 ```{r}
 fviz_pca_biplot(PCA_practices, habillage = HCPC_pca_practice$data.clust$clust, addEllipses  =T, ellipse.level = 0.95) 
-
-
 ```
 
 
@@ -793,6 +793,7 @@ cluster_df%>%
 ### exctract locality
 cluster_df%>%
   mutate(locality = factor((str_extract(soil_code,"((?<=^.{3})[A-Z]+)"))))-> cluster_df
+
 ```
 
 
@@ -942,7 +943,7 @@ traits = data.frame(SBM_bact_similarity = sbm_bact_known$memberships$Bact_Known,
  filter(SBM_bact_similarity != max(SBM_bact_similarity))
   
 ```
-Trait value extract from sbm clustering (species part). Make the assuption that species how appear fequently in the same sample should have same tratis and similare responce to covariate. Altough in last group containe moslty rare species
+Trait value extract from sbm clustering (species part). Make the assuption that species how appear fequently in the same sample should have same tratis and similare responce to covariate. Altough last group contain moslty rare species
 
 ```{r}
  bact_OTUs_rarefied_t%>%
@@ -1529,6 +1530,7 @@ fungi_its_decont_known%>%pivot_longer(starts_with("BU"), names_to = "soil_code",
   pivot_wider(names_from = "soil_code", values_from = "read") -> ITS_fungi_known
 
 ```
+
 ```{r echo = T}
 
 ITS_fungi_known_t <- ITS_fungi_known%>%as.data.frame%>%
@@ -1537,7 +1539,7 @@ ITS_fungi_known_t <- ITS_fungi_known%>%as.data.frame%>%
   t()
 
 plot(1:length(rowSums(ITS_fungi_known_t)), log10(sort(rowSums(ITS_fungi_known_t), decreasing = T)))
-10^3.5
+
 
 set.seed(2)
 fungi_ITS_rarefied_t <-  ITS_fungi_known_t %>% 
