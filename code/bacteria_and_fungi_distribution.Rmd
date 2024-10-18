@@ -161,7 +161,9 @@ bact_tax <- bact_ASV %>%
 read_tsv("data/metadata.txt") %>%
   rename_with(~gsub(".", "_", ., fixed = TRUE)) -> metadata
 
-read_tsv("data/sample_coordinates.tsv") -> coord
+read_tsv("data/sample_coordinates.tsv") %>%
+  rename(soil_code = "samples") %>%
+  mutate(soil_code = str_replace(soil_code,"([A-Z]+)(\\d+)","BU_\\1_\\2")) -> coord
 
 read_tsv("data/divesities_bact.tsv") %>%
   dplyr::select(starts_with("Hill_"),soil_code) -> div_bact
@@ -263,6 +265,47 @@ smb_soil <- estimateBipartiteSBM(soil_standard_rank, model = "gaussian", estimOp
 ## Variety
 
 ```{r}
+variety%>%
+  mutate(varnieb = case_when(varnieb == "beng-raaga" ~"Beng-raaga",
+                   varnieb == "Beng-yaanga spécial" ~"Beng-yaanga",
+                   varnieb == "beng-yaanga" ~"Beng-yaanga",
+                   varnieb == "beng raaga(beng zaalé)" ~"Beng-raaga",
+                   varnieb == "Beng raaga" ~"Beng-raaga",
+                  .default = as.character(varnieb)),
+         varsorgh = case_when(varsorgh == "Mélange(Pissopoé + Mitindaadé)" ~"Mélange(Pissopoé + Mitindaadé)",
+                   varsorgh == "rouko" ~"Rouko",
+                  .default = as.character(varsorgh))) -> variety
+
+tab.disjonctif(variety$varnieb) -> varnieb
+
+varnieb%>%
+  as.data.frame()%>%
+  mutate(`Beng-raaga` = `Beng-raaga` + `Mélange (beng-raaga+Beng-yaanga)`,
+         `Beng-yaanga` = `Beng-yaanga` + `Mélange (beng-raaga+Beng-yaanga)`) %>%
+  select(!(starts_with("Mélange") ))%>%
+  as.matrix() -> varnieb
+
+tab.disjonctif(variety$varsorgh) -> varsorgh
+
+varsorgh%>%
+  as.data.frame()%>%
+  mutate(`ICSV-1049` = `ICSV-1049` + `Mélange (ICSV-1049+Mitindaadé)`,
+         `Mitindaadé` = `Mitindaadé` + `Mélange (ICSV-1049+Mitindaadé)`,
+         Rouko = Rouko + `Mélange (Mitindaadé+rouko)`,
+         `Mitindaadé` = `Mitindaadé` + `Mélange (Mitindaadé+rouko)`,
+         Pisnou = Pisnou + `Mélange (Pisnou+Kazinga)`,
+         Kazinga = `Mélange (Pisnou+Kazinga)`,
+         `Mitindaadé` = `Mitindaadé` + `Mélange (Pissopoé + Mitindaadé)`,
+         `Pissopoé` = `Pissopoé` + `Mélange (Pissopoé + Mitindaadé)`,
+                  `Mitindaadé` = `Mitindaadé` + `Mélange(Pissopoé + Mitindaadé)`,
+         `Pissopoé` = `Pissopoé` + `Mélange(Pissopoé + Mitindaadé)`,
+         `Zoé-wongo` =  `Mélange (Zoé-wongo+Kourbouli)`,
+         Kourbouli =  Kourbouli + `Mélange (Zoé-wongo+Kourbouli)`,
+        `Zoé-wongo` = `Zoé-wongo` + `Zoé-wongo+rouko`,
+         Rouko = Rouko + `Zoé-wongo+rouko`)%>%
+        select(!(starts_with("Mélange")  | "Zoé-wongo+rouko"))%>%
+  as.matrix() -> varsorgh
+
 cbind(varnieb, varsorgh)%>%
   data.frame()%>%
   mutate(across(everything(), ~case_when(. == 1 ~  cur_column(),
@@ -271,23 +314,27 @@ cbind(varnieb, varsorgh)%>%
   
 cult_var_df%>%
   group_by(cult_var)%>%
-  summarise(n= n())%>%
-  ggplot(temp)+
+  summarise(n= n())-> cult_var_count_df
+
+ggplot(cult_var_count_df)+
   geom_point(aes(cult_var, n), cex = 3)+
   main_theme+
   theme(axis.text.x = element_text(colour = "black", size=12, face="italic", angle = 45, vjust = 1, hjust = 1))
+
 ```
 3 cereal and legum composition are most represented. To simplify I keep those and add a 4th class containing all other composition
 
 ```{r}
 cult_var_df%>%
-  left_join(temp, by = "cult_var")%>%
+  left_join(cult_var_count_df, by = "cult_var")%>%
+  # but culture variety type in other when they appear less than 5 time in the 80 samples
   mutate(cult_var = case_when(n<5 ~ "others",
                               cult_var == "Beng.raaga_Mitindaadé_Pissopoé" ~ "Beng.raaga_Pissopoé",
                               cult_var == "Beng.raaga_Balinpèlga" ~ "others",
                                .default = cult_var),
           soil_code = soil$soil_code)%>%
   select(-n) -> cult_var_df
+
 cult_var_df%>%
   group_by(cult_var)%>%
   summarise(n= n())%>%
@@ -459,6 +506,7 @@ diversities_soil_df %>%
 ```
 
 ### Diversities vs cluster
+
 ```{r}
 library(RColorBrewer)
 
@@ -496,7 +544,77 @@ diversities_clust_df %>%
 
 ```
 
-## JSDM
+## SVD
+```{r}
+library(svd)
+svd.rpd <-function(trun, ntw){
+  ### truncate at n dim
+  SVD = propack.svd(community_matrix, neig = trun)
+  trunc_d =  diag(sqrt(SVD$d))
+  
+  
+  
+  L =(SVD$u %*% trunc_d)
+  egein_V = SVD$d
+  
+  R = trunc_d %*% t(SVD$v)
+  t_R = t(R)#[,1:12]
+  
+  return(list(L = L,t_R = t_R, egein_V = egein_V, trun = trun))
+}
+trun = 2:80
+
+community_matrix <- bact_ASV_rare_filtred %>%
+  select(starts_with("BU")) %>%
+  as.matrix %>% t()
+SVD_min = propack.svd(community_matrix, neig = 1)
+SVD_max = propack.svd(community_matrix)
+eigenval_max_sum <- sum(SVD_max$d)
+
+trun |> 
+  purrr::map(\(x) svd.rpd(x,community_matrix)) -> test
+transformed_list <- map(test, function(x) data.frame(trunc = x[["trun"]],  eigenval_ratio =  sum(x[["egein_V"]])/eigenval_max_sum, eigen_val = log(tail(x[["egein_V"]],1L))))%>%
+  bind_rows()
+transformed_list%>%
+  pivot_longer(-trunc) %>%
+  ggplot()+
+  geom_point(aes(trunc, value))+
+  facet_wrap(~name, scales = "free", nrow = 2)+
+  main_theme
+test[[2]]$L %*% diag(test[[2]]$egein_V) %*% t(test[[2]]$t_R)
+hist(test[[50]]$L, breaks = 100)
+
+
+rownames(test[[50]]$L) = rownames(community_matrix)
+colnames(test[[50]]$L) = as.character(1:51)
+test[[50]]$L %>% 
+  plotMyMatrix(dimLabels = c("soil_code", "idk"), plotOptions = list(rowNames = T,colNames = T))+
+  theme(
+    legend.position="none",
+    axis.text.x =element_text(angle = 45, vjust = 1, hjust = 1, size = 6, face="italic"),
+    axis.text.y = element_text(size = 5,face="italic"))
+
+hist(test[[50]]$L %*% diag(test[[50]]$egein_V))
+
+test[[50]]$L %*% diag(test[[50]]$egein_V) %>% 
+  plotMyMatrix(dimLabels = c("soil_code", "idk"), plotOptions = list(rowNames = T,colNames = T))+
+  theme(
+    legend.position="none",
+    axis.text.x =element_text(angle = 45, vjust = 1, hjust = 1, size = 6, face="italic"),
+    axis.text.y = element_text(size = 5,face="italic"))
+```
+
+```{r}
+bact_ASV_rare_filtred %>%
+  filter(str_detect(species, "unknown"))
+```
+
+
+```{r}
+bact_ASV_rare_filtred %>%
+  filter(str_detect(species, "unknown"))
+```
+
 
 ```{r}
 bact_ASV_rare_filtred %>%
@@ -507,12 +625,13 @@ bact_ASV_rare_filtred %>%
 
 ```{r}
 bact_ASV_rare_filtred_subsample %>%
+  select(starts_with("BU")) %>%
   as.matrix %>%
   t() %>%
   estimateBipartiteSBM(
     model = 'poisson', 
     dimLabels = c("soil_code", "Bact_Known"),
-    estimOptions = list(nbCores = 8,plot = F)) -> sbm_bact_known
+    estimOptions = list(nbCores = 1,plot = F)) -> sbm_bact_known
 ```
 
 
