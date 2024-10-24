@@ -1,6 +1,6 @@
 # oracle
 
-This repositorry contain a method to compare metagenomics and metabarcoding.
+This repositorry contains a method to compare metagenomics and metabarcoding.
 
 ## Workflow
 
