@@ -21,7 +21,7 @@ library(alluvial) #aluvial plot
 library(MuMIn) # model selection
 library(aricode) # NMI
 library(purrr)
-
+library(hilldiv)
 
 library(factoextra)
 library(corrplot)
@@ -81,8 +81,7 @@ replace_unknown_taxonomy <- function(taxonomy_vector) {
     })
 }
 
-bact_taxonomic_levels <- c("kingdom", "phylum", "class", "order", "family", 
-                           "genus", "species")
+
 
 # import data
 .%>%
@@ -118,12 +117,10 @@ bact_taxonomic_levels <- c("kingdom", "phylum", "class", "order", "family",
   mutate(taxonomy = str_replace_all(taxonomy, "uncultured|\\*|Incertae_Sedis", "unknown"),
          taxonomy = replace_unknown_taxonomy(taxonomy)
          ) %>%
-  separate(taxonomy, bact_taxonomic_levels, sep = "[|]", extra = "drop") %>%
+  separate_wider_delim(taxonomy,names = taxonomic_levels, delim = "|", cols_remove  = F) %>%
   #{{sequences affiliated to chloroplast and mitonchondria are excluded}}
   filter(order != "Chloroplast", family != "Mitochondria")%>%
   droplevels() -> rename.cols.and.arrange.taxonomy
-
-
 
 
 . %>%
@@ -145,13 +142,17 @@ bact_taxonomic_levels <- c("kingdom", "phylum", "class", "order", "family",
 
 ```{r}
 bact_data_path<- "data/Oracle_soils_16S_341F_785R_87_samples.OTU.filtered.cleaved.nosubstringOTUs.mumu.table2"
+taxonomic_levels <- c("kingdom", "phylum", "class", "order", "family", 
+                           "genus", "species")
 
 bact_data_path %>%
   rename.cols.and.arrange.taxonomy %>%
-  decontaminate -> bact_ASV
+  decontaminate %>%
+  filter(!str_detect(species, "metagenome")
+         )-> bact_ASV
 
 bact_tax <- bact_ASV %>%
-  select(OTU, all_of(bact_taxonomic_levels))
+  select(OTU, all_of(taxonomic_levels))
 ```
 
 
@@ -164,6 +165,9 @@ read_tsv("data/metadata.txt") %>%
 read_tsv("data/sample_coordinates.tsv") %>%
   rename(soil_code = "samples") %>%
   mutate(soil_code = str_replace(soil_code,"([A-Z]+)(\\d+)","BU_\\1_\\2")) -> coord
+coord%>%
+  ggplot()+
+  geom_point(aes(longitude,latitude,col = str_extract(soil_code, "(BU)_([A-Z]+)_(\\d+)", group = 2)))
 
 read_tsv("data/divesities_bact.tsv") %>%
   dplyr::select(starts_with("Hill_"),soil_code) -> div_bact
@@ -413,9 +417,10 @@ bact_ASV %>%
   select(starts_with("BU")) %>%
   colSums %>%
   min -> min_sample
-
+colnames(bact_ASV)
 bact_ASV %>%
   rarefaction.func(min_sample) -> bact_ASV_rare
+
 ```
 
 
@@ -469,6 +474,7 @@ bact_ASV_rare_filtred %>%
 ```
 
 ### Diversities vs soil
+
 ```{r}
 library(RColorBrewer)
 
@@ -476,7 +482,8 @@ soil %>%
   left_join(diversities_df, by = "soil_code") %>%
   mutate(K = case_when(K>3 ~ NA,
                        .default = K))%>%
-  pivot_longer(-c(soil_code, hill_diversity_type, diversity_values, N_site,Site   ), names_to = "soil_name", values_to = "soil_val")-> diversities_soil_df
+  pivot_longer(-c(soil_code, hill_diversity_type, diversity_values, N_site,Site   ), names_to = "soil_name", values_to = "soil_val") -> diversities_soil_df
+
 diversities_soil_df %>%
   filter(hill_diversity_type == "richness") %>%
   ggplot() +
@@ -518,12 +525,343 @@ diversities_clust_df %>%
   filter(hill_diversity_type == "richness") %>%
   ggplot() +
   geom_boxplot(aes(cluster_val, diversity_values)) +
+  facet_wrap(~cluster_type, scale = "free") +
+  scale_color_brewer(palette = "Set1")+
+  theme_minimal()
+
+  diversities_clust_df %>%
+  filter(hill_diversity_type == "shanon") %>%
+  ggplot() +
+  geom_boxplot(aes(cluster_val, diversity_values)) +
+  facet_wrap(~cluster_type, scale = "free") +
+  scale_color_brewer(palette = "Set1")+
+  theme_minimal()
+
+
+diversities_clust_df %>%
+  filter(hill_diversity_type == "simpson") %>%
+  ggplot() +
+  geom_boxplot(aes(cluster_val, diversity_values)) +
+  facet_wrap(~cluster_type, scale = "free") +
+  scale_color_brewer(palette = "Set1")+
+  theme_minimal()
+
+```
+
+### beta div 
+```{r}
+library(doParallel)
+library(parallel)
+
+
+data.frame(n = c(1,2,3,4,5,6), group= c( "a","a","b","b","c","c")) %>%
+  group_by(group)%>%
+  mutate(n = sample(n, replace = F)) 
+  
+beta.div.null.model <- function(community_df, n_perm =8, n_core= 8){
+  
+  shuffle.row.and.compute.beta.dist <- function(community_df){
+  resampled_df <- community_df %>%
+    rownames_to_column("OTU") %>%
+    pivot_longer(-OTU) %>%
+    mutate(value = sample(value, replace = F)) %>%
+    pivot_wider(names_from = "name", values_from = "value")%>%
+    column_to_rownames("OTU")
+  
+  resampled_df %>%
+    hilldiv::pair_dis(qvalue=1, level="1",metric = "C") 
+  }
+  
+  vec_perm <- 1:n_perm
+  community_df %>%
+    select(starts_with("BU")) -> community_df
+  cl <- parallel::makeCluster(n_core)
+  doParallel::registerDoParallel(cl)
+  pairwise_beta_div_rand <- foreach::foreach(mat = 1:n_perm %>% 
+                                                    map(~community_df),
+                                           .packages = c("hilldiv", "tidyverse"),
+                                           .verbose = T) %dopar%
+    shuffle.row.and.compute.beta.dist(mat)
+  
+    parallel::stopCluster(cl)
+
+  pairwise_beta_div_rand %>%
+    map(\(x) x[[1]]) %>%
+    simplify2array %>%
+    apply( 1:2, function(x) mean(x, na.rm =T)) %>%
+    as.data.frame()%>%
+    mutate(soil_code = colnames(community_df))%>%
+    pivot_longer(-soil_code, names_to = "soil_code2", values_to = "null_beta_div_mean") %>%
+    filter(!is.na(null_beta_div_mean))  -> mean_df
+
+  pairwise_beta_div_rand %>%
+    map(\(x) x[[1]]) %>%
+    simplify2array %>%
+    apply( 1:2, function(x) sd(x, na.rm =T)) %>%
+    as.data.frame()%>%
+    mutate(soil_code = colnames(community_df))%>%
+    pivot_longer(-soil_code, names_to = "soil_code2", values_to = "null_beta_div_sd") %>%
+    filter(!is.na(null_beta_div_sd))  -> sd_df
+  mean_df %>%
+    left_join(sd_df, by = join_by(soil_code == soil_code, soil_code2 == soil_code2)) -> null_beta_div_df
+     
+  return(null_beta_div_df)
+     
+}
+#b-nearest community index (z-score of difference between realized and null beta diversity)
+
+compute.beta.nci <- function(obs_beta_div, null_beta_div_mean, null_beta_div_sd){
+  (obs_beta_div-null_beta_div_mean)/null_beta_div_sd
+}
+```
+
+```{r}
+beta.div.null.model(bact_ASV_rare_filtred, n_perm = 8) -> null_beta_div_df
+
+bact_ASV_rare_filtred %>%
+  select(starts_with("BU")) %>% 
+  hilldiv::div_part(qvalue=0) -> divpartobject
+beta_dis(divpartobject) -> beta_div
+
+bact_ASV_rare_filtred %>%
+  select(starts_with("BU")) %>%
+  hilldiv::pair_dis(qvalue=0, level="1",metric = "C") -> pairwise_beta_div
+
+pairwise_beta_div[[1]]%>%
+  as.data.frame()%>%
+  rownames_to_column("soil_code")%>%
+  pivot_longer(-soil_code, names_to = "soil_code2", values_to = "obs_beta_div") %>%
+  filter(!is.na(obs_beta_div))  -> pairwise_beta_div_df
+
+. %>%
+  group_by(soil_code)%>%
+  mutate(bootstrap_beta_div = sample(obs_beta_div,replace = T),
+         obs_beta_div = NULL) -> row.perm.beta.div
+
+1:1000 %>%
+  map(~row.perm.beta.div(pairwise_beta_div_df)) %>%
+  bind_rows() %>%
+  group_by(soil_code, soil_code2) %>%
+  summarise(null_beta_div_mean = mean(bootstrap_beta_div),
+            null_beta_div_sd = sd(bootstrap_beta_div)) -> null_beta_div_df
+  
+pairwise_beta_div_df %>%
+  left_join(null_beta_div_df, join_by(soil_code == soil_code, soil_code2 == soil_code2)) %>%
+  mutate(beta_nci = compute.beta.nci(obs_beta_div, null_beta_div_mean , null_beta_div_sd)) -> pairwise_beta_div_df
+
+pairwise_beta_div_df%>%
+  left_join(cluster_df, by = "soil_code") %>%
+  left_join(cluster_df, by = join_by(soil_code2 == soil_code)) -> beta_div_cluster_df
+
+beta_div_cluster_df%>%
+  ggplot()+
+  facet_wrap(~clust_soil.x)+
+  geom_boxplot(aes(clust_soil.y, obs_beta_div, col =clust_soil.x==clust_soil.y )) +
+  labs(x = "soil type", y = "beta diversity") +
+  scale_y_continuous(limits = c(1,2))+
+  main_theme
+
+beta_div_cluster_df%>%
+  ggplot()+
+  facet_wrap(~clust_cult_history.x)+
+  geom_boxplot(aes(clust_cult_history.y, obs_beta_div, col =clust_cult_history.x==clust_cult_history.y )) +
+  labs(x = "soil type", y = "beta diversity") +
+  scale_y_continuous(limits = c(1,2))+
+  main_theme
+
+beta_div_cluster_df$beta_nci
+
+beta_div_cluster_df%>%
+  ggplot()+
+
+  geom_boxplot(aes(clust_soil.x, beta_nci, col = clust_soil.y )) +
+  geom_abline(intercept = 2, slope = 0, linetype = 2)+
+  geom_abline(intercept = -2, slope = 0, linetype = 2)+
+  labs(x = "soil type", y = "beta diversity") +
+  main_theme
+
+```
+
+#### Make taxo tree
+
+```{r}
+library(metacoder)
+bact_ASV_rare_filtred %>%
+  select(taxonomy) %>% # family, genus,
+  # create metacoder object
+  metacoder::parse_tax_data(class_cols = "taxonomy", # The column in the input table
+                    class_sep = "|",
+                    class_regex = "^([a-z]{0,1})_{0,2}(.*)$",
+                    class_key = c("tax_rank" = "taxon_rank", "name" = "taxon_name")) -> obj
+
+obj %>%
+  metacoder::filter_taxa(taxon_ranks == "o", supertaxa = TRUE)%>%
+  metacoder::heat_tree(node_label = taxon_names,
+          node_size = n_obs, # number of OTUs
+          node_size_axis_label = "OTU count",
+          layout = "davidson-harel", initial_layout = "reingold-tilford",
+          title ="taxonomical tree at order rank")
+```
+
+
+```{r}
+library(picante)
+
+data(phylocom)
+names(phylocom) 
+str(phy)
+phy <- phylocom$phylo 
+comm <- phylocom$sample
+traits <- phylocom$traits
+
+```
+
+
+```{r}
+fungi_data_path<- "data/Oracle_soils_ITS2_ITS86F_ITS4_169_samples.OTU.filtered.cleaved.nosubstringOTUs.mumu.table2"
+
+fungi_data_path %>%
+  read_tsv() %>%
+  #{{format column names}}
+  rename_with(~sub("\\_.*", "", .)) %>%
+  rename_with(~gsub("-", "_", .)) %>%
+  rename_with(~gsub("OR", "BU",.)) %>%
+  rename(CONT_BU_ext = BU_T_extr) %>%
+  rename(CONT_BU_PCR1 = T_1) %>%
+  rename(CONT_BU_PCR2a = T_2) %>%
+  rename(CONT_BU_PCR2b = T_3) %>%
+  #{{select samples from ORACLE project}}
+  select(OTU, taxonomy, starts_with("CONT", ignore.case = FALSE),
+         starts_with("BU_RT_", ignore.case = FALSE),
+         starts_with("BU_SERL_", ignore.case = FALSE),
+         starts_with("BU_ST_", ignore.case = FALSE),
+         starts_with("BU_TS_", ignore.case = FALSE),
+         starts_with("BU_YL_", ignore.case = FALSE)) %>%
+  #{{homogeneize resequenced sample names}}
+  rename_with(~sub("\\_1$", "_01", .)) %>%
+  rename_with(~sub("\\_2$", "_02", .)) %>%
+  rename_with(~sub("\\_3$", "_03", .)) %>%
+  rename_with(~sub("\\_4$", "_04", .)) %>%
+  rename_with(~sub("\\_5$", "_05", .)) %>%
+  rename_with(~sub("\\_6$", "_06", .)) %>%
+  rename_with(~sub("\\_7$", "_07", .)) %>%
+  rename_with(~sub("\\_8$", "_08", .)) %>%
+  rename_with(~sub("\\_9$", "_09", .)) %>%
+  #{{"Fungi" are selected}}
+  filter(grepl("Fungi", taxonomy)) %>%
+  mutate(taxonomy = str_replace_all(taxonomy, "uncultured|\\*|Incertae_Sedis", "unknown"),
+         taxonomy = replace_unknown_taxonomy(taxonomy)
+         ) %>%
+  separate(taxonomy, bact_taxonomic_levels, sep = "[|]", extra = "drop") %>%
+  #{{sequences affiliated to chloroplast and mitonchondria are excluded}}
+  droplevels()%>%
+  decontaminate -> fungi_ASV
+
+fungi_tax <- fungi_ASV %>%
+  select(OTU, all_of(taxonomic_levels))
+```
+
+```{r}
+set.seed(126)
+fungi_ASV %>%
+  select(starts_with("BU")) %>%
+  colSums %>%
+  min -> min_sample_f
+
+fungi_ASV %>%
+  rarefaction.func(min_sample_f) -> fungi_ASV_rare
+```
+
+
+```{r}
+fungi_ASV_rare %>%
+  select(starts_with("BU")) %>%
+  colSums
+
+fungi_ASV_rare %>%
+  filter(rowSums(across(starts_with("BU"))) == 0) %>%
+  select(-starts_with("BU")) -> ultra_rare_fungi
+
+table(ultra_rare_fungi$class) %>%
+  sort(decreasing = T)
+
+fungi_ASV_rare %>%
+  filter(rank(rowSums(across(starts_with("BU")))) > 400) %>%
+  select(-starts_with("BU")) -> abund_fungi
+table(abund_fungi$class) %>%
+  sort(decreasing = T)
+```
+
+```{r}
+fungi_ASV_rare %>% 
+  filter(rowSums(across(starts_with("BU")) != 0) > 3 & # occur more than 3 times across sample
+         rowSums(across(starts_with("BU"))) > 10 # reads count > 10 across sample
+         ) %>%
+  column_to_rownames("OTU")-> fungi_ASV_rare_filtred
+str(fungi_ASV_rare_filtred)
+```
+
+## Diversities 
+
+```{r}
+fungi_ASV_rare_filtred %>%
+  compute.hill.diversities -> diversities_fungi_df
+```
+
+### Diversities vs soil
+```{r}
+soil %>%
+  left_join(diversities_fungi_df, by = "soil_code") %>%
+  mutate(K = case_when(K>3 ~ NA,
+                       .default = K))%>%
+  pivot_longer(-c(soil_code, hill_diversity_type, diversity_values, N_site,Site   ), names_to = "soil_name", values_to = "soil_val") -> diversities_fungi_soil_df
+
+diversities_fungi_soil_df %>%
+  filter(hill_diversity_type == "richness") %>%
+  ggplot() +
+  geom_point(aes(soil_val, diversity_values, col = Site)) +
+  geom_smooth(aes(soil_val, diversity_values), method = "lm")+
+  facet_wrap(~soil_name, scale = "free") +
+  scale_color_brewer(palette = "Set1")+
+  theme_minimal()
+
+diversities_fungi_soil_df %>%
+  filter(hill_diversity_type == "shanon") %>%
+  ggplot() +
+  geom_point(aes(soil_val, diversity_values, col = Site)) +
+  geom_smooth(aes(soil_val, diversity_values), method = "lm")+
+  facet_wrap(~soil_name, scale = "free") +
+  scale_color_brewer(palette = "Set1")+
+  theme_minimal()
+
+diversities_fungi_soil_df %>%
+  filter(hill_diversity_type == "simpson") %>%
+  ggplot() +
+  geom_point(aes(soil_val, diversity_values, col = Site)) +
+  geom_smooth(aes(soil_val, diversity_values), method = "lm")+
+  facet_wrap(~soil_name, scale = "free") +
+  scale_color_brewer(palette = "Set1")+
+  theme_minimal()
+```
+
+### Diversities vs cluster
+
+```{r}
+
+cluster_df %>%
+  left_join(diversities_fungi_df, by = "soil_code") %>%
+  pivot_longer(-c(soil_code, hill_diversity_type, diversity_values,locality), names_to = "cluster_type", values_to = "cluster_val")-> diversities_fungi_clust_df
+
+diversities_fungi_clust_df %>%
+  filter(hill_diversity_type == "richness") %>%
+  ggplot() +
+  geom_boxplot(aes(cluster_val, diversity_values, col = locality)) +
   geom_smooth(aes(cluster_val, diversity_values), method = "lm")+
   facet_wrap(~cluster_type, scale = "free") +
   scale_color_brewer(palette = "Set1")+
   theme_minimal()
 
-diversities_clust_df %>%
+diversities_fungi_clust_df %>%
   filter(hill_diversity_type == "shanon") %>%
   ggplot() +
   geom_boxplot(aes(cluster_val, diversity_values)) +
@@ -533,7 +871,7 @@ diversities_clust_df %>%
   theme_minimal()
 
 
-diversities_clust_df %>%
+diversities_fungi_clust_df %>%
   filter(hill_diversity_type == "simpson") %>%
   ggplot() +
   geom_boxplot(aes(cluster_val, diversity_values)) +
@@ -544,12 +882,71 @@ diversities_clust_df %>%
 
 ```
 
+### beta div 
+
+```{r}
+
+fungi_ASV_rare_filtred %>%
+  select(starts_with("BU")) %>% 
+  hilldiv::div_part(qvalue=0) -> divpartobject_fungi
+beta_dis(divpartobject_fungi) -> beta_div_fungi
+
+fungi_ASV_rare_filtred %>%
+  select(starts_with("BU")) %>%
+  hilldiv::pair_dis(qvalue=0, level="1") -> pairwise_beta_div_fungi
+
+pairwise_beta_div_fungi[[1]]%>%
+  as.data.frame()%>%
+  rownames_to_column("soil_code")%>%
+  pivot_longer(-soil_code) %>%
+  filter(!is.na(value)) %>%
+  left_join(cluster_df, by = "soil_code") %>%
+  left_join(cluster_df, by = join_by(name == soil_code)) -> beta_div_cluster_fungi_df
+
+beta_div_cluster_fungi_df%>%
+  ggplot()+
+  facet_wrap(~clust_soil.x)+
+  geom_boxplot(aes(clust_soil.y, value, col =clust_soil.x==clust_soil.y )) +
+  labs(x = "soil type", y = "beta diversity") +
+  scale_y_continuous(limits = c(1,2))+
+  main_theme
+
+beta_div_cluster_fungi_df%>%
+  ggplot()+
+  facet_wrap(~clust_cult_history.x)+
+  geom_boxplot(aes(clust_cult_history.y, value, col =clust_cult_history.x==clust_cult_history.y )) +
+  labs(x = "soil type", y = "beta diversity") +
+  scale_y_continuous(limits = c(1,2))+
+  main_theme
+```
+
+```{r}
+library(sbm)
+fungi_ASV_rare_filtred %>%
+  select(starts_with("BU")) %>%
+  mutate(across(everything(), ~case_when(.x == 0~NA,
+                                         .default = .x))) %>%
+  as.matrix %>%
+  log1p -> test_mat_fungi
+hist(test_mat_fungi)
+
+fungi_ASV_rare_filtred %>%
+  select(starts_with("BU")) %>%
+  as.matrix() %>%
+  log1p %>%
+  estimateBipartiteSBM(
+    model = 'poisson', 
+    dimLabels = c("fungi", "soil_code"),
+    estimOptions = list(plot = T)) -> sbm_fungi
+  
+```
+
 ## SVD
 ```{r}
 library(svd)
 svd.rpd <-function(trun, ntw){
   ### truncate at n dim
-  SVD = propack.svd(community_matrix, neig = trun)
+  SVD = propack.svd(ntw, neig = trun)
   trunc_d =  diag(sqrt(SVD$d))
   
   
@@ -562,132 +959,58 @@ svd.rpd <-function(trun, ntw){
   
   return(list(L = L,t_R = t_R, egein_V = egein_V, trun = trun))
 }
-trun = 2:80
 
-community_matrix <- bact_ASV_rare_filtred %>%
+```
+
+```{r}
+bact_ASV %>%
+  pull(genus ) %>% 
+  table %>% 
+  sort(decreasing = T) %>% 
+  length()
+
+bact_ASV %>%
+  filter(!str_detect(species,"unknown")) %>% pull(species) %>% table %>% sort(decreasing = T)
+bact_ASV %>%
+  filter(str_detect(genus ,"unknown")) %>% pull(genus) %>% table %>% sort(decreasing = T)
+
+bact_ASV_rare_filtred%>%
+  filter(str_detect(species,"unknown__Gemmataceae_f")) %>%
+  select(starts_with("BU")) %>% 
+  as.matrix()%>%
+  log1p%>%
+  plotMyMatrix(dimLabels = c("soil_code", "Bact Known"), plotOptions = list(rowNames = T,colNames = T))+
+  theme(
+    legend.position="none",
+    axis.text.x =element_text(angle = 45, vjust = 1, hjust = 1, size = 6, face="italic"),
+    axis.text.y = element_text(size = 5,face="italic"))+
+  theme(strip.text.x = element_text(colour = "gray", size=15, face ="italic"),
+        strip.text.y  = element_text(colour = "gray", size=15, face ="italic"),
+        strip.background = element_rect(fill="white"),
+        panel.border = element_rect(color = "black",  fill = NA))
+trun <- 2:80
+
+eigenval_max_sum <- svd.rpd(trun = 80, ntw = bact_ASV %>%
   select(starts_with("BU")) %>%
-  as.matrix %>% t()
-SVD_min = propack.svd(community_matrix, neig = 1)
-SVD_max = propack.svd(community_matrix)
-eigenval_max_sum <- sum(SVD_max$d)
+  t())[["egein_V"]] %>%
+  sum
 
 trun |> 
-  purrr::map(\(x) svd.rpd(x,community_matrix)) -> test
+  purrr::map(\(x) svd.rpd(x,bact_ASV%>%
+                            select(starts_with("BU")) %>%
+                            t() %>%
+                            decostand(method = "hellinger")
+                            )) -> test
+
 transformed_list <- map(test, function(x) data.frame(trunc = x[["trun"]],  eigenval_ratio =  sum(x[["egein_V"]])/eigenval_max_sum, eigen_val = log(tail(x[["egein_V"]],1L))))%>%
   bind_rows()
+test[[79]]$t_R %>% colSums
 transformed_list%>%
   pivot_longer(-trunc) %>%
   ggplot()+
   geom_point(aes(trunc, value))+
   facet_wrap(~name, scales = "free", nrow = 2)+
   main_theme
-test[[2]]$L %*% diag(test[[2]]$egein_V) %*% t(test[[2]]$t_R)
-hist(test[[50]]$L, breaks = 100)
 
-
-rownames(test[[50]]$L) = rownames(community_matrix)
-colnames(test[[50]]$L) = as.character(1:51)
-test[[50]]$L %>% 
-  plotMyMatrix(dimLabels = c("soil_code", "idk"), plotOptions = list(rowNames = T,colNames = T))+
-  theme(
-    legend.position="none",
-    axis.text.x =element_text(angle = 45, vjust = 1, hjust = 1, size = 6, face="italic"),
-    axis.text.y = element_text(size = 5,face="italic"))
-
-hist(test[[50]]$L %*% diag(test[[50]]$egein_V))
-
-test[[50]]$L %*% diag(test[[50]]$egein_V) %>% 
-  plotMyMatrix(dimLabels = c("soil_code", "idk"), plotOptions = list(rowNames = T,colNames = T))+
-  theme(
-    legend.position="none",
-    axis.text.x =element_text(angle = 45, vjust = 1, hjust = 1, size = 6, face="italic"),
-    axis.text.y = element_text(size = 5,face="italic"))
 ```
-
-```{r}
-bact_ASV_rare_filtred %>%
-  filter(str_detect(species, "unknown"))
-```
-
-
-```{r}
-bact_ASV_rare_filtred %>%
-  filter(str_detect(species, "unknown"))
-```
-
-
-```{r}
-bact_ASV_rare_filtred %>%
-  select(starts_with("BU")) %>%
-  sample_n(1000) -> bact_ASV_rare_filtred_subsample
-```
-
-
-```{r}
-bact_ASV_rare_filtred_subsample %>%
-  select(starts_with("BU")) %>%
-  as.matrix %>%
-  t() %>%
-  estimateBipartiteSBM(
-    model = 'poisson', 
-    dimLabels = c("soil_code", "Bact_Known"),
-    estimOptions = list(nbCores = 1,plot = F)) -> sbm_bact_known
-```
-
-
-```{r}
-studyDesign = data.frame(sample = colnames(bact_ASV_rare_filtred_subsample), stringsAsFactors=TRUE)
-rL = HmscRandomLevel(units = studyDesign$sample)
-rL$nfMax = 15
-
-bact_ASV_rare_filtred_subsample %>%
-  mutate(across(everything(), ~case_when(
-    .x==0 ~NA,
-    .default = .x)
-    )
-  ) %>%
-  as.matrix -> bact_ASV_rare_filtred_subsample_na
-bact_ASV_rare_filtred_subsample_na %>%
-  as.matrix %>%
-  log %>%
-  hist(breaks = 1000) 
-
-rL = HmscRandomLevel(units = studyDesign$sample)
-rL$nfMax = 15
-
-m1 = Hmsc(Y = bact_ASV_rare_filtred_subsample_na %>% t(), studyDesign = studyDesign,
-         XData = soil%>%select(pHeau,CEC), XFormula =  ~ CEC +pHeau,
-         distr = "poisson", ranLevels = list(sample = rL))
-
-nChains = 2
-test.run = T
-if (test.run){
-
-thin = 2
-samples = 200
-transient = 50
-} else {
-
-thin = 10
-samples = 1000
-transient = 500
-}
-verbose = 10
-m_fit1 = sampleMcmc(m1, thin = thin, samples = samples, transient = transient,
-nChains = nChains, nParallel = nChains, verbose = verbose)
-
-
-postGamma = getPostEstimate(m_fit1, parName = "Gamma")
-plotGamma(m_fit1, post=postGamma, param="Support", supportLevel = 0.95)
-
-postBeta = getPostEstimate(m_fit1, parName="Beta")
-plotBeta(m_fit1, post=postBeta, param="Support", supportLevel = 0.95)
-
-Gradient = constructGradient(m_fit1, focalVariable = "CEC", ngrid = 80)
-predY = predict(m_fit1, XData=Gradient$XDataNew, expected=TRUE)
-par(mfrow = c(1,1))
-plotGradient(m_fit1, Gradient, pred=predY, measure="S", showData = TRUE)
-plotGradient(m_fit1, Gradient, pred=predY, measure="Y", index = 4, showData = TRUE)
-```
-
 
