@@ -1,4 +1,4 @@
-## 2024-10-16
+## 2024-10-24
 library(vegan)
 library(tidyverse)
 
@@ -8,7 +8,7 @@ abundances <- c(1000, 100, 10, 1)
 a_sample <- list(reads = abundances)
 n_samples <- 79
 n_reads <- 200
-n_runs <- 10
+n_replicates <- 10
 
 
 ## ------------------------------------------------------------------ functions
@@ -22,7 +22,6 @@ amplify_sample <- function(a_sample, n_cycles) {
   if (n_cycles < 0) { stop("'n_cycles' must be >= 0") }
   if (n_cycles > 50) { stop("'n_cycles' is too large") }
   tibble(reads = a_sample) %>%
-    as_tibble() %>%
     mutate(scalling_factor = runif(n = length(abundances), min = 1, max = 2),
            reads = round(reads * (scalling_factor ** n_cycles))) %>%
     select(reads) %>%
@@ -47,7 +46,7 @@ compute_stats <- function(many_samples, n_cycles) {
               .groups = "drop")
 }
 
-a_run <- function(n_cycles) {
+process_sample <- function(n_cycles) {
   a_sample %>%
     duplicate_sample %>%
     purrr::modify(amplify_sample, n_cycles = n_cycles) %>%
@@ -55,18 +54,19 @@ a_run <- function(n_cycles) {
     compute_stats(n_cycles = n_cycles)
 }
 
-many_runs <- function(n_cycles) {
-  n_runs %>%
-    seq() %>%
-    purrr::imap_dfr(~ a_run(n_cycles = n_cycles),
-                    .id = "run")
+replicate_study <- function(n_cycles) {
+  n_replicates %>%
+    seq(from = 1, to = .) %>%
+    purrr::imap_dfr(~ process_sample(n_cycles = n_cycles),
+                    .id = "replicate")
 }
 
 
 ## ----------------------------------------------------------------------- main
 
-many_runs(n_cycles = 0) -> metagenomics
-many_runs(n_cycles = 10) -> metabarcoding
+replicate_study(n_cycles = 0) -> metagenomics
+replicate_study(n_cycles = 10) -> metabarcoding
+
 
 bind_rows(metagenomics, metabarcoding) %>%
   ggplot(aes(x = log(mean), y = log(variance))) +
