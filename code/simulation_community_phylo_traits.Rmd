@@ -1,0 +1,444 @@
+---
+title: "Untitled"
+author: "Mathis Gheno"
+date: "2024-10-29"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+## Packages
+
+```{r}
+library(tidyverse)
+library(geiger)
+library(purrr)
+library(MASS)
+library(vegan)
+library(picante)
+library(doParallel)
+library(parallel)
+```
+
+## Usefull function
+
+```{r}
+main_theme = theme_minimal()+
+  theme(line = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        panel.border = element_blank(),
+        axis.ticks =  element_line(colour = "black"),
+        axis.text.x = element_text(colour = "black", size=22, face="italic", angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(colour = "black", size=22, face="italic"),
+        legend.title = element_text(colour = "black", size=20,
+                                    hjust =0.5),
+        
+        legend.text = element_text(colour = "black", size=18),
+        axis.title= element_text(size=28),
+        strip.text = element_text(colour = "black", size=15, face ="italic"))
+```
+
+## Simulation test
+
+
+### Step 3 : trait-space covariance
+
+```{r}
+compute.CVtr <- function(dispersal_breadth, CVes, niche_breadth, D){
+  (matrix(c(0,0,1,1,
+         0,0,1,1,
+         1,1,0,0,
+         1,1,0,0), nrow = 4)*exp(-dispersal_breadth) +
+         matrix(c(0,0,1,0,
+           0,0,0,1,
+           1,0,1,0,
+           0,1,0,0), nrow = 4) * CVes*exp(-niche_breadth)
+         )/(D+1) -> CVtr
+
+  diag(CVtr) = c(1,1,1,1)
+
+  colnames(CVtr) = c("trait1", "trait2", "centriod1", "centriod2")
+  return(round(CVtr,2))
+}
+```
+
+This is just a matrix form of the following function : $CV_{T_iR_j} = \frac{e^{-d} +CV_{E_jS_j}e^{-n_i}}{1+D_S}$. How those this work : 
+
+- $CV_{T_iR_j}$ is the species-levels covariance. It is a covariance matrix that define the covariance between each traits ($T_i$) and each range centroid position $S_j$ (in other term : the **true mean position of each species in space**). This matrix could be estimated from real data because it define the relation between traits-traits, traits-realized niche and realized niche-realized niche. By "default" trait1-realized niche1 and trait2-realized niche2 are perfectly correlated if no process influence them. But when dispersal and fundamental niche are added to the equation, this isn't true any more.
+
+-  The species-levels covariance matrix $CV_{T_iR_j}$ is result of the community level covariance matrix $CV_{E_jS_j}$ which is covariance of environmental variables and spatial dimensions and  by dispersal strength $e^{-d}$ and the environmental filtering (fundamental niche)  $e^{-n_i}$. Dispersal and fundamental niche only affect the traits-realized niche covariance (not traits-traits or realized niche-realized niche)
+-   When there is a strong dispersal (d is big) $e^{-d} \rightarrow 0$, dispersal have no effect on traits and realized niche co-variances (dispersal isn't a limitation), . The opposite is true when there is a low dispersal
+-   When fundamental niche are large (n is big) $e^{-n} \rightarrow 0$, niche have no effect on traits and realized niche co-variances (dispersal isn't a limitation). The opposite is true when fundamental niche are narrow
+
+For exemple trait1-realized niche1 can be less corralted because of wider niche breath 
+For exemple trait2-realized niche1 can be corralted because of stanger dispersal
+
+### Step 4 : Generate regional phylogeny
+```{r}
+#phylo_tree <- sim.bdtree(b = 0.1, d = 0, n = num_species)  # Phylogeny of species
+#plot(phylo_tree)
+```
+
+### Step 5 : Generate species traits (environmental optima)
+```{r}
+
+simulate.characher.evolution <- function(phylo_tree, CVtr){
+  
+  traits_and_centroid <- sim.char(phy = phylo_tree, par = CVtr, nsim = 1, model = "BM")  # Brownian motion trait evolution
+  
+  traits_and_centroid <- as.data.frame(traits_and_centroid)
+  colnames(traits_and_centroid) <- c("trait1", "trait2", "centriod1", "centriod2")
+  
+  traits_and_centroid <- vegan::decostand(traits_and_centroid, method = "standardize")
+  
+  return(traits_and_centroid)
+}
+```
+
+### Step 6 : ramdomly assing abundance from a log normal distribution
+```{r}
+assing.abundance <- . %>%
+  mutate(abund = rpois(n(), exp(rnorm(n = n(), 5, 2))),
+         realtive_abund= abund / sum(abund))
+```
+### Step 7 : Samples
+```{r}
+condition.and.position.samples<- function(num_sites, CVes){
+  
+  spatial_env <- MASS::mvrnorm(n = num_sites, mu = rep(0,4), Sigma = CVes)
+  spatial_env <- as.data.frame(spatial_env)%>%
+    vegan::decostand(method = "standardize") 
+  colnames(spatial_env) <-  c("dim1", "dim2", "env1", "env2")
+  
+  return(spatial_env)
+  }
+```
+
+
+### Step 8 : probability of species incidence
+
+```{r}
+
+create.community.matrix.probability <- function(spatial_env, traits_and_centroid){
+  
+ spatial_env %>%   
+  rownames_to_column("sample") %>%
+  rowwise() %>%
+  mutate(species_probs = list(
+    traits_and_centroid %>%
+      rownames_to_column("species") %>%
+      mutate(
+
+        # Spatial coordinates and range centroid
+        spatial_distance = sqrt((centriod1 - dim1)^2 + (centriod2 - dim2)^2),
+        dispersal_prob = dnorm(spatial_distance, sqrt(dispersal_breadth)),
+        
+        # Environmental variables and environmental optima
+        env_distance = sqrt((trait1 - env1)^2 + (trait2 - env2)^2),
+        niche_prob = dnorm(env_distance, sqrt(niche_breadth)),
+       
+        
+        # Combined probability
+        combined_prob = realtive_abund*dispersal_prob * niche_prob
+      )
+  )) %>%
+  unnest(cols = species_probs) %>%
+  dplyr::select(sample, species, combined_prob) %>%
+  pivot_wider(names_from = species, values_from = combined_prob) %>%
+  column_to_rownames("sample")
+  
+  }
+```
+
+### Step 9 : Assemble local community
+
+"either sample a fixed number of individuals or sample until a fixed number of species is reached, but both cannot be constrained simultaneously."
+
+**fixed number of individuals**
+```{r}
+simulate.community.matrix<-  function(comunity_prob_matrix, num_sites){
+  
+  1:num_sites %>%
+  purrr::map(\(x) sample(colnames(comunity_prob_matrix), size = 10000,
+                  prob = comunity_prob_matrix[x,],
+                  replace = T )%>%
+        table %>% 
+        as.data.frame %>%
+        rename( sp = ".", abund = "Freq") %>%
+        mutate(soil_code = paste0("sample", x))
+      ) %>% 
+  bind_rows() %>%
+  pivot_wider(values_from = abund, names_from = sp, values_fill = 0) %>%
+   column_to_rownames("soil_code")
+  
+  }
+```
+
+
+
+### Final function
+
+```{r}
+simulate.a.community <- function(num_sites, num_species, D, dispersal_breadth, niche_breadth, S_E_cov, phylo_tree, abund){
+  # two environmental axes are independent in our two-dimensional scenario and that each only correlates with one spatial dimension.
+  CVes <- matrix(c(1, 0, S_E_cov, 0,
+                            0, 1, 0, S_E_cov,
+                            S_E_cov, 0, 1, 0,
+                            0, S_E_cov, 0, 1), nrow = 4)
+  colnames(CVes) <-  c("env1", "env2", "dim1", "dim2")
+  
+  CVtr<- compute.CVtr(dispersal_breadth, CVes, niche_breadth, D)
+
+  #phylo_tree <- sim.bdtree(b = 0.1, d = 0, n = num_species)  # Phylogeny of species
+  
+  traits_and_centroid <- simulate.characher.evolution(phylo_tree, CVtr) %>%
+    #assing.abundance%>%
+    mutate(abund = abund,
+        realtive_abund= abund / sum(abund)) %>%
+    mutate(dispersal_breadth = dispersal_breadth,
+        niche_breadth = niche_breadth,
+        S_E_cov = S_E_cov)
+    
+  spatial_and_env <- condition.and.position.samples(num_sites,CVes)
+  
+  create.community.matrix.probability(spatial_and_env,traits_and_centroid )%>%
+    simulate.community.matrix(num_sites) -> community_matrix
+  
+  return(list(CVtr = CVtr,
+              phylo_tree = phylo_tree,
+              traits_and_centroid = traits_and_centroid,
+              spatial_and_env =spatial_and_env, 
+              community_matrix = community_matrix))
+  }
+```
+
+### simulation
+
+```{r}
+#
+num_species <- 500
+num_sites <- 20
+D = 2
+
+
+purrr::map2(list(0.0001, 10,0.0001, 10), list(0.95, 0.95,0.3, 0.3), 
+     \(x,y) simulate.a.community(num_sites = num_sites,
+                                 num_species = num_species,
+                                 D = D,
+                                 dispersal_breadth =  x,
+                                 niche_breadth =  x,
+                                 S_E_cov = y)[["traits_and_centroid"]]) %>%
+  bind_rows()-> obj
+
+obj %>%
+  ggplot() +
+  facet_grid(cols = vars(niche_breadth), rows =vars(S_E_cov))+
+  geom_point(aes(centriod2, trait2))+
+  geom_smooth(aes(centriod2, trait2), method = "lm")+
+  geom_abline(intercept = 0, slope = 1)+
+  scale_x_continuous(limits = c(-3,3))
+```
+
+```{r}
+niche_breadth <- 0.0001 # Environmental filtering strength
+dispersal_breadth <-0.0001  # Dispersal limitation strength
+S_E_cov = 0.95
+
+simulate.a.community(num_sites, num_species, D, dispersal_breadth, niche_breadth, S_E_cov) -> test1
+
+
+### Hill beta diversity based on abundances
+test1$community_matrix %>%
+  t() %>%
+  hilldiv::pair_dis(qvalue=0, level="1",metric = "C") -> pairwise_beta_div
+
+### Phylogenetic beta diversity based on abundances
+phydist<-cophenetic(test1$phylo_tree)
+comdist.result <- picante::comdist(test1$community_matrix, phydist,abundance.weighted = T)
+mean(comdist.result)
+```
+
+```{r}
+beta.div.hill <- function(mat){
+  mat%>%
+  t() %>%
+  hilldiv::pair_dis(qvalue=0, level="1",metric = "C") -> hilldiv_list
+  return(mean(hilldiv_list[["L1_beta"]], na.rm = T))
+}
+beta.div.phylo <- function(mat,tree){
+  phylo_dist <- cophenetic(tree)
+  beta_phylo <- picante::comdist(mat, phylo_dist,abundance.weighted = F)
+  return(mean(beta_phylo, na.rm =T))
+}
+compute.div <- function(mat, tree){
+  data.frame(mean_beta_hill = beta.div.hill(obj$community_matrix),
+                        mean_beta_phylo = beta.div.phylo(obj$community_matrix,
+                                                          obj$phylo_tree),
+                        dispersal_breadth = obj$traits_and_centroid$dispersal_breadth[1] ,
+                        niche_breadth  =obj$traits_and_centroid$niche_breadth[1])}
+```
+
+```{r}
+num_species <- 250
+num_sites <- 16
+D = 2
+S_E_cov = 0.7
+breath_value <- round(exp(seq(log(0.0001),log(10), length.out = 10)),4)
+test_fin <- data.frame()
+
+  phylo_tree <- sim.bdtree(b = 0.1, d = 0, n = num_species)
+  abund = rpois(num_species, exp(rnorm(n = num_species, 5, 2)))
+  purrr::map2(as.list(rep(breath_value,10)), as.list(sort(rep(breath_value,10))), 
+       \(x,y) simulate.a.community(num_sites = num_sites,
+                                   num_species = num_species,
+                                   D = D,
+                                   dispersal_breadth =  x,
+                                   niche_breadth =  y,
+                                   S_E_cov = S_E_cov,
+                                   phylo_tree = phylo_tree,
+                                   abund = abund)) -> obj_seq_along_breaths
+  
+  ### Hill beta diversity based on abundances
+  
+  cl <- parallel::makeCluster(8)
+  doParallel::registerDoParallel(cl)
+  
+      
+  test <- foreach::foreach(obj = obj_seq_along_breaths,
+                   .packages = c ("tidyverse", "hilldiv", "picante")) %dopar%{
+                     1:20 %>%
+                      purrr::map(\(x) simulate.a.community(num_sites = num_sites,
+                                   num_species = num_species,
+                                   D = D,
+                                   dispersal_breadth =  x,
+                                   niche_breadth =  y,
+                                   S_E_cov = S_E_cov,
+                                   phylo_tree = obj$phylo_tree,
+                                   abund = sample(abund))) %>%
+                       compute.div(phylo_tree)
+                   }
+    
+    
+     data.frame(mean_beta_hill = beta.div.hill(obj$community_matrix),
+                        mean_beta_phylo = beta.div.phylo(obj$community_matrix,
+                                                          obj$phylo_tree),
+                        dispersal_breadth = obj$traits_and_centroid$dispersal_breadth[1] ,
+                        niche_breadth  =obj$traits_and_centroid$niche_breadth[1])
+  
+  parallel::stopCluster(cl)
+     
+  test %>%
+    bind_rows() -> test
+  test$n_sim <- n_sim
+  test_fin <- rbind(test_fin,test)
+
+
+test_fin
+
+test_fin %>%
+  group_by(n_sim, dispersal_breadth, niche_breadth) %>%
+  summarise(mean_beta_hill = mean(mean_beta_hill),
+            mean_beta_phylo = mean(mean_beta_phylo ))%>%
+  mutate(mean_beta_hill = (mean_beta_hill - mean(mean_beta_hill))/sd(mean_beta_hill),
+         mean_beta_phylo  = (mean_beta_phylo - mean(mean_beta_phylo))/sd(mean_beta_phylo) )%>%
+  pivot_longer(starts_with("mean"))%>%
+  ggplot() +
+  facet_wrap(~name, scales = "free") +
+  geom_raster(aes(dispersal_breadth,niche_breadth, fill = value))+
+  scale_x_log10()+
+  scale_y_log10()
+
+```
+
+
+```{r}
+library(sbm)
+
+community_matrix_sim%>%
+  column_to_rownames("soil_code") %>%
+  as.matrix() %>%
+
+  log1p %>%
+  plotMyMatrix(dimLabels = c("soil_code", "species"), plotOptions = list(rowNames = T,colNames = T))+
+  theme(
+    legend.position="none",
+    axis.text.x =element_text(angle = 45, vjust = 1, hjust = 1, size = 6, face="italic"),
+    axis.text.y = element_text(size = 5,face="italic"))+
+  theme(strip.text.x = element_text(colour = "gray", size=15, face ="italic"),
+        strip.text.y  = element_text(colour = "gray", size=15, face ="italic"),
+        strip.background = element_rect(fill="white"),
+        panel.border = element_rect(color = "black",  fill = NA))
+```
+
+### step 10 : compute beta diversities
+
+```{r}
+
+
+### Hill beta diversity based on abundances
+community_matrix_sim %>%
+  t() %>%
+  hilldiv::pair_dis(qvalue=0, level="1",metric = "C") -> pairwise_beta_div
+
+### Phylogenetic beta diversity based on abundances
+phydist<-cophenetic(phylo_tree)
+comdist.result <- picante::comdist(community_matrix_sim, phydist,abundance.weighted = T)
+```
+
+### Some visualisation
+
+```{r}
+spatial_env %>%
+  ggplot() +
+  geom_point(aes(dim1, dim2, col = env1), cex =3, alpha = 0.9)
+spatial_env %>%
+  ggplot() +
+  geom_point(aes(dim1, dim2, col = env2), cex =3, alpha = 0.9)
+traits_and_centroid%>%
+  ggplot() +
+  geom_point(aes(centriod1, centriod2, col = trait1), cex =3, alpha = 0.9)
+```
+
+
+```{r}
+pairwise_beta_div[[1]]%>%
+  as.data.frame()%>%
+  rownames_to_column("soil_code")%>%
+  pivot_longer(-soil_code, names_to = "soil_code2", values_to = "obs_beta_div") %>%
+  filter(!is.na(obs_beta_div))  -> pairwise_beta_div_df
+
+comdist.result%>%
+  as.data.frame()%>%
+  rownames_to_column("soil_code")%>%
+  pivot_longer(-soil_code, names_to = "soil_code2", values_to = "obs_beta_phylo") %>%
+  filter(!is.na(obs_beta_phylo))  -> pairwise_beta_phylo_df
+
+
+spatial_env %>%
+  as.data.frame() %>%
+  rownames_to_column("soil_code")%>%
+  dplyr::mutate(soil_code =paste("sample",soil_code, sep = "")) -> spatial_env
+
+
+pairwise_beta_div_df %>%
+  left_join(spatial_env, by = "soil_code") %>%
+  left_join(spatial_env, by = join_by(soil_code2 == soil_code)) %>%
+  mutate(diff_env1 = abs(env1.x-env1.y),
+         diff_env2 = abs(env2.x-env2.y),
+         diff_dim1 = abs(dim1.x-dim1.y),
+         diff_dim2 = abs(dim2.x-dim2.y)) %>%
+  dplyr::select(-ends_with("x"),-ends_with("y"))-> beta_div_spatial_env_df
+
+
+beta_div_spatial_env_df %>%
+  pivot_longer(starts_with("diff"), values_to = "diff_val", names_to = "diff_var")%>%
+  ggplot()+
+  facet_wrap(~diff_var)+
+  geom_point(aes(diff_val,obs_beta_div )) +
+  labs(x = "differences saptial or envrionnemental", y = "beta diversity") +
+  scale_y_continuous(limits = c(1,2))+
+  main_theme
+
+
+```
+

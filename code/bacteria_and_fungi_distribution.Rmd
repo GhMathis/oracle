@@ -94,10 +94,10 @@ replace_unknown_taxonomy <- function(taxonomy_vector) {
   rename(CONT_BU_PCR1 = T_1) %>%
   rename(CONT_BU_PCR2 = T_2) %>% 
   #{{select samples from ORACLE project}}
-  select(OTU, taxonomy, starts_with("CONT", ignore.case = FALSE), 
+  dplyr::select(OTU, taxonomy, starts_with("CONT", ignore.case = FALSE), 
          starts_with("BU", ignore.case = FALSE)) %>%
   #{{keep only resequenced samples when available}}
-  select(-BU_SER_10, -BU_ST_10, -BU_YL_19, -BU_TS_3) %>%
+  dplyr::select(-BU_SER_10, -BU_ST_10, -BU_YL_19, -BU_TS_3) %>%
   #{{homogeneize resequenced sample names}}
   rename(BU_SER_10 = BU_SER_10_S) %>%
   rename(BU_ST_10 = BU_ST_10_S) %>%
@@ -136,7 +136,7 @@ replace_unknown_taxonomy <- function(taxonomy_vector) {
     n > reads ~ 0,
     TRUE      ~ reads - n)
     ) %>%
-  select(-n,-starts_with("CONT")) %>%
+  dplyr::select(-n,-starts_with("CONT")) %>%
   pivot_wider(values_from = reads, names_from = samples, values_fill = 0) -> decontaminate
 ```
 
@@ -152,7 +152,7 @@ bact_data_path %>%
          )-> bact_ASV
 
 bact_tax <- bact_ASV %>%
-  select(OTU, all_of(taxonomic_levels))
+   dplyr::select(OTU, all_of(taxonomic_levels))
 ```
 
 
@@ -257,7 +257,7 @@ plot(sbm_preced_cult_bis)
 
 ```{r echo = T}
 soil%>%
-  select(-c(soil_code, N_site, Site))%>%
+   dplyr::select(-c(soil_code, N_site, Site))%>%
   mutate_all(~zscore_normalization(.))%>%
   as.matrix()-> soil_standard_rank
 
@@ -286,7 +286,7 @@ varnieb%>%
   as.data.frame()%>%
   mutate(`Beng-raaga` = `Beng-raaga` + `Mélange (beng-raaga+Beng-yaanga)`,
          `Beng-yaanga` = `Beng-yaanga` + `Mélange (beng-raaga+Beng-yaanga)`) %>%
-  select(!(starts_with("Mélange") ))%>%
+  dplyr::select(!(starts_with("Mélange") ))%>%
   as.matrix() -> varnieb
 
 tab.disjonctif(variety$varsorgh) -> varsorgh
@@ -307,7 +307,7 @@ varsorgh%>%
          Kourbouli =  Kourbouli + `Mélange (Zoé-wongo+Kourbouli)`,
         `Zoé-wongo` = `Zoé-wongo` + `Zoé-wongo+rouko`,
          Rouko = Rouko + `Zoé-wongo+rouko`)%>%
-        select(!(starts_with("Mélange")  | "Zoé-wongo+rouko"))%>%
+        dplyr::select(!(starts_with("Mélange")  | "Zoé-wongo+rouko"))%>%
   as.matrix() -> varsorgh
 
 cbind(varnieb, varsorgh)%>%
@@ -337,7 +337,7 @@ cult_var_df%>%
                               cult_var == "Beng.raaga_Balinpèlga" ~ "others",
                                .default = cult_var),
           soil_code = soil$soil_code)%>%
-  select(-n) -> cult_var_df
+  dplyr::select(-n) -> cult_var_df
 
 cult_var_df%>%
   group_by(cult_var)%>%
@@ -352,7 +352,8 @@ cult_var_df%>%
 ### Agricultural practice
 SBM don't work with those data. don't respect distribution even with rank standardization. I'm using PCA and hierarchical clustering.
 ```{r}
-agri_practice%>%select(where(is.numeric)) %>% # agri practice quanti
+agri_practice%>%
+  dplyr::select(where(is.numeric)) %>% # agri practice quanti
   decostand("standardize")%>%
   PCA -> PCA_practices
  PCA_practices%>%
@@ -389,13 +390,13 @@ cluster_df$clust_soil <- factor(cluster_df$clust_soil, labels = c( "high cation 
 ```{r}
 rarefaction.func <- function(df,rar_sample, n_rare = 100){
    df %>%
-    select(starts_with("BU")) %>%
+    dplyr::select(starts_with("BU")) %>%
     dim -> D
    # {{rarefaction}}
   df_rarefy = matrix(0, nrow =  D[1], ncol = D[2])
   for(n in 1:n_rare){
   df %>%
-    select(starts_with("BU")) %>%
+    dplyr::select(starts_with("BU")) %>%
     t() %>%
     vegan::rrarefy(rar_sample) %>%
     t() + df_rarefy -> df_rarefy
@@ -405,7 +406,7 @@ rarefaction.func <- function(df,rar_sample, n_rare = 100){
   df_rarefy %>%
     bind_cols(
       df %>%
-        select(!starts_with("BU"))
+        dplyr::select(!starts_with("BU"))
     ) -> df_rarefy
   return(df_rarefy)
 }
@@ -414,7 +415,7 @@ rarefaction.func <- function(df,rar_sample, n_rare = 100){
 ```{r}
 set.seed(182631)
 bact_ASV %>%
-  select(starts_with("BU")) %>%
+  dplyr::select(starts_with("BU")) %>%
   colSums %>%
   min -> min_sample
 colnames(bact_ASV)
@@ -426,18 +427,18 @@ bact_ASV %>%
 
 ```{r}
 bact_ASV_rare %>%
-  select(starts_with("BU")) %>%
+  dplyr::select(starts_with("BU")) %>%
   colSums
 
 bact_ASV_rare %>%
   filter(rowSums(across(starts_with("BU"))) == 0) %>%
-  select(-starts_with("BU")) -> ultra_rare_bact
+  dplyr::select(-starts_with("BU")) -> ultra_rare_bact
 table(ultra_rare_bact$class) %>%
   sort(decreasing = T)
 
 bact_ASV_rare %>%
   filter(rank(rowSums(across(starts_with("BU")))) > 59000) %>%
-  select(-starts_with("BU")) -> abund_bact
+  dplyr::select(-starts_with("BU")) -> abund_bact
 table(abund_bact$class) %>%
   sort(decreasing = T)
 ```
@@ -456,7 +457,7 @@ compute.hill.diversities<- function(community_matrix){
   div_id = c(richness = 0, shanon = 1, simpson = 2)
   
   community_matrix %>%
-    select(starts_with("BU")) -> community_matrix
+    dplyr::select(starts_with("BU")) -> community_matrix
   
   div_id %>%
     purrr::map(\(x) hilldiv::hill_div(community_matrix, qvalue = x)) %>%
@@ -549,6 +550,7 @@ diversities_clust_df %>%
 ```
 
 ### beta div 
+
 ```{r}
 library(doParallel)
 library(parallel)
@@ -574,7 +576,7 @@ beta.div.null.model <- function(community_df, n_perm =8, n_core= 8){
   
   vec_perm <- 1:n_perm
   community_df %>%
-    select(starts_with("BU")) -> community_df
+    dplyr::select(starts_with("BU")) -> community_df
   cl <- parallel::makeCluster(n_core)
   doParallel::registerDoParallel(cl)
   pairwise_beta_div_rand <- foreach::foreach(mat = 1:n_perm %>% 
@@ -619,12 +621,12 @@ compute.beta.nci <- function(obs_beta_div, null_beta_div_mean, null_beta_div_sd)
 beta.div.null.model(bact_ASV_rare_filtred, n_perm = 8) -> null_beta_div_df
 
 bact_ASV_rare_filtred %>%
-  select(starts_with("BU")) %>% 
+  dplyr::select(starts_with("BU")) %>% 
   hilldiv::div_part(qvalue=0) -> divpartobject
 beta_dis(divpartobject) -> beta_div
 
 bact_ASV_rare_filtred %>%
-  select(starts_with("BU")) %>%
+  dplyr::select(starts_with("BU")) %>%
   hilldiv::pair_dis(qvalue=0, level="1",metric = "C") -> pairwise_beta_div
 
 pairwise_beta_div[[1]]%>%
@@ -687,7 +689,7 @@ beta_div_cluster_df%>%
 ```{r}
 library(metacoder)
 bact_ASV_rare_filtred %>%
-  select(taxonomy) %>% # family, genus,
+  dplyr::select(taxonomy) %>% # family, genus,
   # create metacoder object
   metacoder::parse_tax_data(class_cols = "taxonomy", # The column in the input table
                     class_sep = "|",
@@ -730,8 +732,8 @@ fungi_data_path %>%
   rename(CONT_BU_PCR1 = T_1) %>%
   rename(CONT_BU_PCR2a = T_2) %>%
   rename(CONT_BU_PCR2b = T_3) %>%
-  #{{select samples from ORACLE project}}
-  select(OTU, taxonomy, starts_with("CONT", ignore.case = FALSE),
+  #{{dplyr::select samples from ORACLE project}}
+  dplyr::select(OTU, taxonomy, starts_with("CONT", ignore.case = FALSE),
          starts_with("BU_RT_", ignore.case = FALSE),
          starts_with("BU_SERL_", ignore.case = FALSE),
          starts_with("BU_ST_", ignore.case = FALSE),
@@ -747,7 +749,7 @@ fungi_data_path %>%
   rename_with(~sub("\\_7$", "_07", .)) %>%
   rename_with(~sub("\\_8$", "_08", .)) %>%
   rename_with(~sub("\\_9$", "_09", .)) %>%
-  #{{"Fungi" are selected}}
+  #{{"Fungi" are dplyr::selected}}
   filter(grepl("Fungi", taxonomy)) %>%
   mutate(taxonomy = str_replace_all(taxonomy, "uncultured|\\*|Incertae_Sedis", "unknown"),
          taxonomy = replace_unknown_taxonomy(taxonomy)
@@ -758,13 +760,13 @@ fungi_data_path %>%
   decontaminate -> fungi_ASV
 
 fungi_tax <- fungi_ASV %>%
-  select(OTU, all_of(taxonomic_levels))
+  dplyr::select(OTU, all_of(taxonomic_levels))
 ```
 
 ```{r}
 set.seed(126)
 fungi_ASV %>%
-  select(starts_with("BU")) %>%
+  dplyr::select(starts_with("BU")) %>%
   colSums %>%
   min -> min_sample_f
 
@@ -775,19 +777,19 @@ fungi_ASV %>%
 
 ```{r}
 fungi_ASV_rare %>%
-  select(starts_with("BU")) %>%
+  dplyr::select(starts_with("BU")) %>%
   colSums
 
 fungi_ASV_rare %>%
   filter(rowSums(across(starts_with("BU"))) == 0) %>%
-  select(-starts_with("BU")) -> ultra_rare_fungi
+  dplyr::select(-starts_with("BU")) -> ultra_rare_fungi
 
 table(ultra_rare_fungi$class) %>%
   sort(decreasing = T)
 
 fungi_ASV_rare %>%
   filter(rank(rowSums(across(starts_with("BU")))) > 400) %>%
-  select(-starts_with("BU")) -> abund_fungi
+  dplyr::select(-starts_with("BU")) -> abund_fungi
 table(abund_fungi$class) %>%
   sort(decreasing = T)
 ```
@@ -887,12 +889,12 @@ diversities_fungi_clust_df %>%
 ```{r}
 
 fungi_ASV_rare_filtred %>%
-  select(starts_with("BU")) %>% 
+  dplyr::select(starts_with("BU")) %>% 
   hilldiv::div_part(qvalue=0) -> divpartobject_fungi
 beta_dis(divpartobject_fungi) -> beta_div_fungi
 
 fungi_ASV_rare_filtred %>%
-  select(starts_with("BU")) %>%
+  dplyr::select(starts_with("BU")) %>%
   hilldiv::pair_dis(qvalue=0, level="1") -> pairwise_beta_div_fungi
 
 pairwise_beta_div_fungi[[1]]%>%
@@ -923,7 +925,7 @@ beta_div_cluster_fungi_df%>%
 ```{r}
 library(sbm)
 fungi_ASV_rare_filtred %>%
-  select(starts_with("BU")) %>%
+  dplyr::select(starts_with("BU")) %>%
   mutate(across(everything(), ~case_when(.x == 0~NA,
                                          .default = .x))) %>%
   as.matrix %>%
@@ -931,7 +933,7 @@ fungi_ASV_rare_filtred %>%
 hist(test_mat_fungi)
 
 fungi_ASV_rare_filtred %>%
-  select(starts_with("BU")) %>%
+  dplyr::select(starts_with("BU")) %>%
   as.matrix() %>%
   log1p %>%
   estimateBipartiteSBM(
@@ -976,7 +978,7 @@ bact_ASV %>%
 
 bact_ASV_rare_filtred%>%
   filter(str_detect(species,"unknown__Gemmataceae_f")) %>%
-  select(starts_with("BU")) %>% 
+  dplyr::select(starts_with("BU")) %>% 
   as.matrix()%>%
   log1p%>%
   plotMyMatrix(dimLabels = c("soil_code", "Bact Known"), plotOptions = list(rowNames = T,colNames = T))+
@@ -991,7 +993,7 @@ bact_ASV_rare_filtred%>%
 trun <- 2:80
 
 eigenval_max_sum <- svd.rpd(trun = 80, ntw = bact_ASV %>%
-  select(starts_with("BU")) %>%
+  dplyr::select(starts_with("BU")) %>%
   t())[["egein_V"]] %>%
   sum
 
