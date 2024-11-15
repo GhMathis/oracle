@@ -10,6 +10,7 @@ editor_options:
 ## Packages
 
 ```{r}
+
 library(tidyverse)
 library(geiger)
 library(purrr)
@@ -18,11 +19,13 @@ library(vegan)
 library(picante)
 library(doParallel)
 library(parallel)
+
 ```
 
 ## Usefull function
 
 ```{r}
+
 main_theme = theme_minimal()+
   theme(line = element_blank(), 
         axis.line = element_line(colour = "black"),
@@ -36,6 +39,7 @@ main_theme = theme_minimal()+
         legend.text = element_text(colour = "black", size=18),
         axis.title= element_text(size=28),
         strip.text = element_text(colour = "black", size=15, face ="italic"))
+
 ```
 
 ## Simulation test
@@ -44,6 +48,7 @@ main_theme = theme_minimal()+
 ### Step 3 : trait-space covariance
 
 ```{r}
+
 compute.CVtr <- function(dispersal_breadth, CVes, niche_breadth, D){
   (matrix(c(0,0,1,1,
          0,0,1,1,
@@ -60,6 +65,7 @@ compute.CVtr <- function(dispersal_breadth, CVes, niche_breadth, D){
   colnames(CVtr) = c("trait1", "trait2", "centriod1", "centriod2")
   return(round(CVtr,2))
 }
+
 ```
 
 This is just a matrix form of the following function : $CV_{T_iR_j} = \frac{e^{-d} +CV_{E_jS_j}e^{-n_i}}{1+D_S}$. How those this work : 
@@ -84,7 +90,7 @@ For exemple trait2-realized niche1 can be corralted because of stanger dispersal
 
 simulate.characher.evolution <- function(phylo_tree, CVtr){
   
-  traits_and_centroid <- sim.char(phy = phylo_tree, par = CVtr, nsim = 1, model = "BM")  # Brownian motion trait evolution
+  traits_and_centroid <- sim.char(phy = phylo_tree, par = CVtr, nsim = 1, model = "speciational")  # Brownian motion trait evolution
   
   traits_and_centroid <- as.data.frame(traits_and_centroid)
   colnames(traits_and_centroid) <- c("trait1", "trait2", "centriod1", "centriod2")
@@ -97,12 +103,15 @@ simulate.characher.evolution <- function(phylo_tree, CVtr){
 
 ### Step 6 : ramdomly assing abundance from a log normal distribution
 ```{r}
+
 assing.abundance <- . %>%
   mutate(abund = rpois(n(), exp(rnorm(n = n(), 5, 2))),
          realtive_abund= abund / sum(abund))
+
 ```
 ### Step 7 : Samples
 ```{r}
+
 condition.and.position.samples<- function(num_sites, CVes){
   
   spatial_env <- MASS::mvrnorm(n = num_sites, mu = rep(0,4), Sigma = CVes)
@@ -111,7 +120,8 @@ condition.and.position.samples<- function(num_sites, CVes){
   colnames(spatial_env) <-  c("dim1", "dim2", "env1", "env2")
   
   return(spatial_env)
-  }
+}
+
 ```
 
 
@@ -156,6 +166,7 @@ create.community.matrix.probability <- function(spatial_env, traits_and_centroid
 
 **fixed number of individuals**
 ```{r}
+
 simulate.community.matrix<-  function(comunity_prob_matrix, num_sites){
   
   1:num_sites %>%
@@ -171,7 +182,8 @@ simulate.community.matrix<-  function(comunity_prob_matrix, num_sites){
   pivot_wider(values_from = abund, names_from = sp, values_fill = 0) %>%
    column_to_rownames("soil_code")
   
-  }
+}
+
 ```
 
 
@@ -179,6 +191,7 @@ simulate.community.matrix<-  function(comunity_prob_matrix, num_sites){
 ### Final function
 
 ```{r}
+
 simulate.a.community <- function(num_sites, num_species, D, dispersal_breadth, niche_breadth, S_E_cov, phylo_tree, abund){
   # two environmental axes are independent in our two-dimensional scenario and that each only correlates with one spatial dimension.
   CVes <- matrix(c(1, 0, S_E_cov, 0,
@@ -209,13 +222,50 @@ simulate.a.community <- function(num_sites, num_species, D, dispersal_breadth, n
               traits_and_centroid = traits_and_centroid,
               spatial_and_env =spatial_and_env, 
               community_matrix = community_matrix))
-  }
+}
+
 ```
+### Test simulation
+
+```{r}
+num_species <- 100
+num_sites <- 20
+D = 2
+dispersal_breadth = 0.01
+niche_breadth = 0.0001
+S_E_cov = 0.7
+
+phylo_tree <- sim.bdtree(b = 0.1, d = 0, n = num_species)
+plot(phylo_tree)
+abund <- rpois(num_species, exp(rnorm(n = num_species, 1, 2)))
+
+simulate.a.community(num_sites = num_sites,
+                                 num_species = num_species,
+                                 D = D,
+                                 dispersal_breadth =  dispersal_breadth,
+                                 niche_breadth =  niche_breadth,
+                                 S_E_cov = S_E_cov,
+                                 phylo_tree = phylo_tree,
+                                 abund = abund) -> test_sim
+
+test_sim$CVtr
+
+test_sim$traits_and_centroid %>%
+  rownames_to_column("sp") %>%
+  mutate(num_sp = as.numeric(str_extract(sp, "\\d+"))) %>%
+  ggplot()+
+  geom_text(aes(trait1, trait2, label = sp, col = num_sp))
+
+
+
+
+```
+
 
 ### simulation
 
 ```{r}
-#
+
 num_species <- 500
 num_sites <- 20
 D = 2
@@ -227,7 +277,9 @@ purrr::map2(list(0.0001, 10,0.0001, 10), list(0.95, 0.95,0.3, 0.3),
                                  D = D,
                                  dispersal_breadth =  x,
                                  niche_breadth =  x,
-                                 S_E_cov = y)[["traits_and_centroid"]]) %>%
+                                 S_E_cov = y,
+                                 phylo_tree = phylo_tree,
+                                 abund = abund)[["traits_and_centroid"]]) %>%
   bind_rows()-> obj
 
 obj %>%
@@ -237,9 +289,11 @@ obj %>%
   geom_smooth(aes(centriod2, trait2), method = "lm")+
   geom_abline(intercept = 0, slope = 1)+
   scale_x_continuous(limits = c(-3,3))
+
 ```
 
 ```{r}
+
 niche_breadth <- 0.0001 # Environmental filtering strength
 dispersal_breadth <-0.0001  # Dispersal limitation strength
 S_E_cov = 0.95
@@ -256,9 +310,11 @@ test1$community_matrix %>%
 phydist<-cophenetic(test1$phylo_tree)
 comdist.result <- picante::comdist(test1$community_matrix, phydist,abundance.weighted = T)
 mean(comdist.result)
+
 ```
 
 ```{r}
+
 beta.div.hill <- function(mat){
   mat%>%
   t() %>%
@@ -276,9 +332,11 @@ compute.div <- function(mat, tree){
                                                           obj$phylo_tree),
                         dispersal_breadth = obj$traits_and_centroid$dispersal_breadth[1] ,
                         niche_breadth  =obj$traits_and_centroid$niche_breadth[1])}
+
 ```
 
 ```{r}
+
 num_species <- 250
 num_sites <- 16
 D = 2

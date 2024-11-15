@@ -1,0 +1,533 @@
+---
+title: "random process"
+author: "Mathis Gheno"
+date: "2024-11-12"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+## Import packages
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(vegan)
+library(purrr)
+library(hilldiv)
+library(pracma)
+```
+## usefull function
+
+```{r}
+
+main_theme = theme_minimal()+
+  theme(line = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        panel.border = element_blank(),
+        axis.ticks =  element_line(colour = "black"),
+        axis.text.x = element_text(colour = "black", size=22, face="italic", angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(colour = "black", size=22, face="italic"),
+        legend.title = element_text(colour = "black", size=20,
+                                    hjust =0.5),
+
+        legend.text = element_text(colour = "black", size=18),
+        axis.title= element_text(size=28),
+        strip.text = element_text(colour = "black", size=15, face ="italic"))
+
+zscore_normalization <- function(data) {
+  # Step 1: Rank the data
+  ranked_data <- rank(data)
+  n <- length(data)
+  
+  # Step 2: Calculate quantile positions
+  quantile_positions <- (ranked_data) / (n + 1)
+  
+  # Step 3: Transform quantiles to z-scores
+  mean_std_normal <- qnorm(quantile_positions)
+  
+  return(mean_std_normal)
+}
+  
+  
+replace_unknown_taxonomy <- function(taxonomy_vector) {
+ taxonomy_vector %>%
+    str_split(pattern = "\\|") %>%
+    map_chr(function(x) {
+      # Iterate over the taxonomy ranks and replace "unknown"
+      for (i in length(x):1) {
+        if (str_detect(x[i], "unknown")) {
+          # Find the nearest known taxonomic rank
+          known_rank <- x[max(which(!str_detect(x, "unknown")))]
+          known_name <- str_extract(known_rank, "[^__]+$")
+          known_initial <- substr(known_rank, 1, 1)
+          
+          # Replace "unknown" with "unknown_<known_rank>_<initial>"
+          x[i] <-  paste0("unknown__", known_name, "_", known_initial)
+        }
+      }
+      # Join the ranks back into a single string
+      str_c(x, collapse = "|")
+    })
+}
+
+
+
+# import data
+.%>%
+  read_tsv() %>%
+  #{{format column names}}
+  rename_with(~sub("\\_.*", "", .)) %>%
+  rename_with(~gsub("-", "_", .)) %>%
+  rename_with(~gsub("OR", "BU",.)) %>%
+  rename(CONT_BU_ext = BU_T_extr) %>%
+  rename(CONT_BU_PCR1 = T_1) %>%
+  rename(CONT_BU_PCR2 = T_2) %>% 
+  #{{select samples from ORACLE project}}
+  dplyr::select(OTU, taxonomy, starts_with("CONT", ignore.case = FALSE), 
+         starts_with("BU", ignore.case = FALSE)) %>%
+  #{{keep only resequenced samples when available}}
+  dplyr::select(-BU_SER_10, -BU_ST_10, -BU_YL_19, -BU_TS_3) %>%
+  #{{homogeneize resequenced sample names}}
+  rename(BU_SER_10 = BU_SER_10_S) %>%
+  rename(BU_ST_10 = BU_ST_10_S) %>%
+  rename(BU_YL_19 = BU_YL_19_S) %>%
+  rename(BU_TS_3 = BU_TS_3_S) %>%
+  rename_with(~sub("\\_1$", "_01", .)) %>%
+  rename_with(~sub("\\_2$", "_02", .)) %>%
+  rename_with(~sub("\\_3$", "_03", .)) %>%
+  rename_with(~sub("\\_4$", "_04", .)) %>%
+  rename_with(~sub("\\_5$", "_05", .)) %>%
+  rename_with(~sub("\\_6$", "_06", .)) %>%
+  rename_with(~sub("\\_7$", "_07", .)) %>%
+  rename_with(~sub("\\_8$", "_08", .)) %>%
+  rename_with(~sub("\\_9$", "_09", .)) %>%
+  #{{sequences with "No_hit" has to be deleted}}
+  filter(grepl("Bacteria|Archaea",taxonomy)) %>%
+  mutate(taxonomy = str_replace_all(taxonomy, "uncultured|\\*|Incertae_Sedis", "unknown"),
+         taxonomy = replace_unknown_taxonomy(taxonomy)
+         ) %>%
+  separate_wider_delim(taxonomy,names = taxonomic_levels, delim = "|", cols_remove  = F) %>%
+  #{{sequences affiliated to chloroplast and mitonchondria are excluded}}
+  filter(order != "Chloroplast", family != "Mitochondria")%>%
+  droplevels() -> rename.cols.and.arrange.taxonomy
+
+
+. %>%
+  replace(. == 0, NA) %>%
+  pivot_longer(starts_with("BU"), names_to = "samples", values_to = "reads") %>%
+  filter(!is.na(reads)) %>%
+  # merge control samples
+  mutate( n = rowSums(across(starts_with("CONT")), na.rm = T)
+          ) %>%
+  # substract abundance of control samples
+  mutate(reads = case_when(
+    is.na(n)  ~ reads,
+    n > reads ~ 0,
+    TRUE      ~ reads - n)
+    ) %>%
+  dplyr::select(-n,-starts_with("CONT")) %>%
+  pivot_wider(values_from = reads, names_from = samples, values_fill = 0) -> decontaminate
+```
+
+## Import data
+
+```{r}
+bact_data_path<- "data/Oracle_soils_16S_341F_785R_87_samples.OTU.filtered.cleaved.nosubstringOTUs.mumu.table2"
+taxonomic_levels <- c("kingdom", "phylum", "class", "order", "family", 
+                           "genus", "species")
+
+bact_data_path %>%
+  rename.cols.and.arrange.taxonomy %>%
+  decontaminate %>%
+  filter(!str_detect(species, "metagenome")
+         )-> bact_ASV
+
+bact_tax <- bact_ASV %>%
+   dplyr::select(OTU, all_of(taxonomic_levels))
+```
+
+Do communities property (parameter of law develop in @Grilli2020Macroecological) change across different condition ?
+
+## Compute laws
+
+To compute law one only need mean and variance of relative abundances of each species across samples
+
+```{r}
+# Fonction pour calculer la variance relative d'abondance pour une espèce donnée
+calculate_variance_abundance <- function(nsi = nsi, Ns =Ns) {
+  mean_nsi <- mean(nsi / Ns)
+  variance_factor <- mean(nsi * (nsi - 1) / (Ns * (Ns - 1)))
+  return(variance_factor - mean_nsi^2)
+}
+
+```
+
+```{r}
+bact_ASV %>% 
+  filter(rowSums(across(starts_with("BU")) != 0) >= 1 & # occur more than 3 times across sample
+         rowSums(across(starts_with("BU"))) > 10 # reads count > 10 across sample
+         ) -> bact_ASV_filter
+
+bact_ASV_filter %>%
+  select(OTU, starts_with("BU")) %>%
+  pivot_longer(-c(OTU), names_to = "soil_code", values_to = "nsi", values_drop_na = T) %>%
+  group_by(soil_code) %>%
+  mutate(Ns = sum(nsi)) %>%
+  ungroup() %>%
+  group_by(OTU) %>%
+  summarise(mean_abundance =   mean(nsi / Ns),
+          variance_abundance = calculate_variance_abundance(nsi, Ns),
+          shape = mean_abundance^2/variance_abundance, # Beta in the paper (but alpha in the Wikipedia and dgamm formula a)
+          scale =  mean_abundance/variance_abundance,# not in the paper (but beta in the Wikipedia and dgamm formula)
+          occurrence = sum(nsi != 0)/80,
+          occurrence_expected = 1- mean(1+((mean_abundance*Ns)/shape))^(-shape)
+          ) -> gamma_params
+gamma_params
+
+gamma_params %>%
+  ggplot() +
+  geom_point(aes(mean_abundance, variance_abundance)) +
+  geom_smooth(aes(mean_abundance, variance_abundance),method = "lm")+
+  geom_abline(intercept = 0, slope = 2, col = "red", linetype = 2, linewidth = 2)+
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "Mean Abundance", y = " Abundance Variance", title = "slope(red) = 1:2 ") +
+  main_theme
+
+
+```
+
+
+
+True occurrence compare with expected occurrence. Expected occurrence is only compute from mean and variance of species relative abundances across samples.
+
+```{r}
+nbin = 10
+
+gamma_params %>%
+  mutate(df = (max(occurrence)-min(occurrence))/nbin,
+         b = as.integer( (occurrence - min(occurrence) )/df)) %>%
+  group_by(b) %>%
+  mutate(mean_occurence = mean(occurrence),
+         mean_occurence_exp = mean(occurrence_expected)) %>%
+  ggplot() +
+  geom_point(aes(occurrence,occurrence_expected ), alpha =0.5) +
+ 
+  geom_smooth(aes(occurrence,occurrence_expected ),method = "lm")+
+
+  geom_abline(intercept = 0, slope = 1, col = "red", linetype = 2, linewidth = 2)+
+  geom_point(aes(mean_occurence,mean_occurence_exp ), fill = "purple", size =4, shape = 23) +
+  labs(x = "occupency (per OTU)", y = "expected occupency (per OTU)")+
+  main_theme
+summary(lm(occurrence~occurrence_expected, gamma_params))
+
+```
+Expected occurrence seems to over estimate a little bit true occurrence 
+
+```{r}
+gamma_params
+```
+
+
+Now i setup function to estimate mu and sigma to estimate averages species relative abundance
+```{r}
+fun_erf <- function( mu, c, m1, m2  ){
+  sigma <- sqrt(-c*m1 + m2 + c*mu - m1*mu )
+  x <- (c-mu)/sigma/sqrt(2.)
+  f <- (mu-m1)*pracma::erfc(x) + exp(- x^2) * sqrt(2/pi) * sigma 
+  return(f)
+}
+
+estimatemean_f <- function( c, m1, m2 ){
+  mumin <- (c*m1 - m2)/(c - m1)
+  muest <- uniroot(fun_erf, c = c, m1 = m1, m2 = m2, interval = c(-50,mumin-0.001), tol = 0.0001 )$root
+  return( muest )
+}
+```
+
+```{r}
+plot(1:length(gamma_params$mean_abundance), sort(log(gamma_params$mean_abundance)))
+nreads = bact_ASV_filter %>%
+  select(starts_with("BU")) %>% 
+           colSums()
+plot(1:length(nreads), sort(log(80/nreads)))
+min(80/nreads)
+gamma_params %>%
+  mutate(log_mean_abundance = log(mean_abundance),
+         c = min(log(80/nreads))) %>%
+  filter( log_mean_abundance > c )%>%
+  summarise(c = mean(c),
+             m1 = mean(log_mean_abundance) ,
+             m2 = mean(log_mean_abundance^2),
+             ns_obs = n_distinct(OTU),
+             nf = sum(mean_abundance),
+            mshape = mean(shape, na.rm = T),
+            mscale = mean(scale, na.rm = T)) %>%
+  rowwise() %>% 
+  mutate( mu = estimatemean_f(c,m1,m2)) %>%
+  mutate( sigma = sqrt(-c*m1 + m2 + c*mu - m1*mu ) ) %>% 
+  ungroup() %>%
+  as.data.frame() %>% 
+  mutate(x = (c-mu)/sqrt(2*sigma^2),
+    stot = 2*ns_obs / erfc(x)) -> estim_mean
+
+estim_mean
+```
+
+```{r}
+nbin = 20
+
+beta = estim_mean$mshape
+etas <-  rnorm( estim_mean$stot, mean = estim_mean$mu, sd = estim_mean$sigma )
+
+predict_occupancys <- function(N, eta ){
+  p0 = ( (beta/(beta+N*exp(eta))  )^beta )
+  return( 1-p0 )
+}
+
+occupancys <- outer(nreads, etas, FUN=predict_occupancys)
+weight_eta <- 1 - exp( colSums(log(1 - occupancys )))
+occ_eta <- colMeans(occupancys)
+data.frame(weight_eta = weight_eta,
+           occ_eta = occ_eta, 
+           b = as.integer(occ_eta*nbin)) %>%
+  filter(!is.na(b)) %>%
+  group_by(b) %>% 
+  summarise( do = 1./nbin, n = sum(weight_eta), o = mean(occ_eta*weight_eta)/mean(weight_eta) ,  pobsm = mean(weight_eta)) %>% 
+  ungroup() %>%
+  mutate( p = n/sum(n)/do) -> expected_occ
+
+# bact_ASV_filter %>%
+#   select(OTU, starts_with("BU")) %>%
+#   pivot_longer(-c(OTU), names_to = "soil_code", values_to = "nsi", values_drop_na = T) %>%
+#   group_by(soil_code) %>%
+#   mutate(Ns = sum(nsi)) %>%
+#   ungroup() %>%
+#   group_by(OTU) %>%
+#   mutate(mean_abundance = calculate_mean_abundance(nsi, Ns),
+#          variance_abundance = calculate_variance_abundance(nsi, Ns),
+#          etas =  rnorm(1,mean = estim_mean$mu, sd = estim_mean$sigma),
+#          beta = (mean_abundance / sqrt(variance_abundance))^2,
+#          occupency = 1 - (beta/(beta + Ns*exp(etas)))^beta) %>%
+#   group_by(OTU) %>%
+#   summarise(weight_eta = 1.-exp( sum(log(1.- occupency ))),
+#             occ_eta = mean(occupency)) %>%
+#   mutate(b = as.integer(occ_eta*nbin)) %>% 
+#   filter(!is.na(b)) %>%
+#   group_by(b) %>% 
+#   summarise( do = 1./nbin, n = sum(weight_eta), o = mean(occ_eta*weight_eta)/mean(weight_eta) ,  pobsm = mean(weight_eta)) %>% 
+#   ungroup() %>%
+#   mutate( p = n/sum(n)/do ) -> expected_occ
+
+gamma_params %>% dplyr::select(OTU, occurrence) %>% 
+  distinct() %>% 
+  mutate( b = as.integer(occurrence*nbin)  ) %>% 
+  group_by(b) %>% 
+  summarise( do = 1./nbin, n = n(), o = mean(occurrence), o_sd = sd(occurrence)) %>% 
+  mutate( p = n/sum(n)/do ) %>% ungroup() -> occ_binned
+```
+
+
+```{r}
+ggplot() +
+  geom_point(data = occ_binned, aes(x = o, y = p), size = 2) +
+
+  geom_line(data= expected_occ,  aes(x = o, y = p) , color = "darkgray", size = 1.5, linetype = "dashed" ) +
+  scale_y_log10( "Probability density"  ) +
+  scale_x_continuous( "Occupancy (predicted = dashed gray, True = black dot)") +
+  main_theme
+###
+```
+```{r}
+gamma_params %>%
+  ggplot() +
+    geom_point( aes(x = mean_abundance, y = occurrence),fill = "gray", shape = 21, size = 2, alpha =0.05) +
+    geom_smooth( aes(x = mean_abundance, y = occurrence), se = F, col = "black") +
+    geom_smooth(aes(x = mean_abundance, y = occurrence_expected), col = "black", se = F, linetype = 2) +
+    scale_y_log10( "Occupancy"  ) +
+    scale_x_log10( "Average relative abundance (log)") +
+    main_theme
+```
+
+```{r}
+
+
+bact_ASV %>% 
+  select(OTU, starts_with("BU")) %>%
+  pivot_longer(-c(OTU), names_to = "soil_code", values_to = "nsi", values_drop_na = T) %>%
+  group_by(soil_code) %>%
+  mutate(Ns = sum(nsi)) %>%
+  ungroup() %>%
+  group_by(OTU) %>%
+  filter(sum(nsi != 0) == 80 ) %>%
+  mutate(log_mean_abundance = log(nsi/Ns),
+         
+         log_mean_abundance_rescale = (log_mean_abundance - mean(log_mean_abundance))/sd(log_mean_abundance)) %>%
+  ggplot() +
+  geom_density(aes(log_mean_abundance_rescale, group = OTU), col = "gray") +
+  geom_density(aes(log_mean_abundance_rescale), linewidth = 1.5) +
+  main_theme
+
+```
+
+```{r}
+nbin <- 20
+gamma_params$mean_abundance %>% max
+
+statp <-  gamma_params %>% 
+  mutate( log_mean_abundance = log(mean_abundance) , cutoff = -100 ,
+          df = (max(log_mean_abundance)-min(log_mean_abundance))/nbin, # log mean abundance class step diff
+          b = as.integer( (log_mean_abundance - min(log_mean_abundance) )/df )) %>% #  log mean abundance class
+  group_by(b) %>% 
+  summarise(log_mean_abundance = mean(log_mean_abundance), cutoff = unique(cutoff), n = n(), df =  unique(df)  ) %>% 
+  ungroup() %>%
+  mutate( p = n / sum(n) / df ) 
+
+simple_par  <- function(x) {- x^2}  
+
+statp %>% 
+  filter(log_mean_abundance > cutoff) %>% 
+  bind_cols(estim_mean) %>% 
+
+  ggplot() + 
+  stat_function( fun = simple_par, color = "black", size = 1 )+
+  geom_point( aes(
+    x = (log_mean_abundance-mu)/sqrt(2*sigma^2)  ,
+    y = 10^( log(p) - log( 0.5 * erfc( (mu-c)/sqrt(2)/sigma ) ) + 0.5*log(2.*pi) ),
+  ), size = 3 , stroke = 1) +
+  geom_vline(aes( xintercept = (c-mu)/sqrt(2*sigma^2)  )  ) +
+  geom_vline(aes( xintercept = 0  )) +
+  scale_x_continuous( "Rescaled log average abundance" ) +
+  scale_y_log10( "Probability density")  +
+  main_theme
+
+```
+
+
+
+## Test with evironnemental condition
+
+```{r}
+library(sbm)
+zscore_normalization <- function(data) {
+  # Step 1: Rank the data
+  ranked_data <- rank(data)
+  n <- length(data)
+  
+  # Step 2: Calculate quantile positions
+  quantile_positions <- (ranked_data) / (n + 1)
+  
+  # Step 3: Transform quantiles to z-scores
+  mean_std_normal <- qnorm(quantile_positions)
+  
+  return(mean_std_normal)
+}
+
+read_tsv("data/metadata.txt") %>%
+  rename_with(~gsub(".", "_", ., fixed = TRUE)) -> metadata
+
+read_xlsx("data/Soil_Parameters_oracle.xlsx") %>%
+  dplyr::select(`C (g kg-1)`,`C/N`, `CEC (cmolc/kg)`, `Ca (cmol/kg)`,`Mg (cmolc/kg)`, `K(cmolc/kg)`, `SBE (cmolc/kg)`,           
+    `TS (%)`, Site...3, `N° site...4`) %>%
+  rename(Site = "Site...3",N_site = "N° site...4", C = "C (g kg-1)",CN = "C/N", CEC = "CEC (cmolc/kg)", Ca = "Ca (cmol/kg)",Mg = "Mg (cmolc/kg)",K = "K(cmolc/kg)",SBE = "SBE (cmolc/kg)",           
+         ,TS = "TS (%)" ) %>%
+  mutate( N_site = str_replace(as.character(N_site), "^[1-9]$", "0\\0"),
+          soil_code = str_c(Site,N_site)) %>%
+  mutate(soil_code = str_c("BU_",Site,"_",N_site)) %>%
+  left_join(metadata%>%dplyr::select(pHeau,Pto,Kto,Nto,MO,soil_code), by = "soil_code") -> soil
+
+soil%>%
+   dplyr::select(-c(soil_code, N_site, Site))%>%
+  mutate_all(~zscore_normalization(.))%>%
+  as.matrix()-> soil_standard_rank
+
+set.seed(2)
+smb_soil <- estimateBipartiteSBM(soil_standard_rank, model = "gaussian", estimOptions = list(plot = FALSE))
+
+data.frame(clust_soil = smb_soil$memberships$row,
+                         soil_code = soil$soil_code) -> cluster_df
+```
+```{r}
+bact_ASV_filter %>%
+  select(OTU, starts_with("BU")) %>%
+  pivot_longer(-c(OTU), names_to = "soil_code", values_to = "nsi", values_drop_na = T) %>%
+  left_join(cluster_df, by = "soil_code")%>%
+  group_by(soil_code, clust_soil) %>%
+  mutate(Ns = sum(nsi)) %>%
+  ungroup() %>%
+  group_by(OTU, clust_soil) %>%
+  summarise(mean_abundance =   mean(nsi / Ns),
+          variance_abundance = calculate_variance_abundance(nsi, Ns),
+          shape = mean_abundance^2/variance_abundance, # Beta in the paper (but alpha in the Wikipedia and dgamm formula a)
+          scale =  mean_abundance/variance_abundance,# not in the paper (but beta in the Wikipedia and dgamm formula)
+          occurrence = sum(nsi != 0)/80,
+          occurrence_expected = 1- mean(1+((mean_abundance*Ns)/shape))^(-shape)
+          ) -> gamma_params
+gamma_params
+
+gamma_params %>%
+  ggplot() +
+  facet_wrap(~clust_soil) +
+  geom_point(aes(mean_abundance, variance_abundance)) +
+  geom_smooth(aes(mean_abundance, variance_abundance),method = "lm")+
+  geom_abline(intercept = 0, slope = 2, col = "red", linetype = 2, linewidth = 2)+
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "Mean Abundance", y = " Abundance Variance", title = "slope(red) = 1:2 ") +
+  main_theme
+```
+```{r}
+nreads = bact_ASV_filter %>%
+  select(starts_with("BU")) %>% 
+           colSums()
+plot(1:length(nreads), sort(log(80/nreads)))
+min(80/nreads)
+gamma_params %>%
+  mutate(log_mean_abundance = log(mean_abundance),
+         c = min(log(80/nreads))) %>%
+  filter( log_mean_abundance > c )%>%
+  group_by(clust_soil) %>%
+  summarise(c = mean(c),
+             m1 = mean(log_mean_abundance) ,
+             m2 = mean(log_mean_abundance^2),
+             ns_obs = n_distinct(OTU),
+             nf = sum(mean_abundance),
+            mshape = mean(shape, na.rm = T),
+            mscale = mean(scale, na.rm = T)) %>%
+  rowwise() %>% 
+  mutate( mu = estimatemean_f(c,m1,m2)) %>%
+  mutate( sigma = sqrt(-c*m1 + m2 + c*mu - m1*mu ) ) %>% 
+  ungroup() %>%
+  as.data.frame() %>% 
+  mutate(x = (c-mu)/sqrt(2*sigma^2),
+    stot = 2*ns_obs / erfc(x)) -> estim_mean
+```
+```{r}
+nbin <- 20
+
+beta <- estim_mean$mshape
+etas <-  rnorm( estim_mean$stot, mean = estim_mean$mu, sd = estim_mean$sigma )
+
+occupancys <- outer(nreads, etas, FUN=predict_occupancys)
+weight_eta <- 1 - exp( colSums(log(1 - occupancys )))
+occ_eta <- colMeans(occupancys)
+data.frame(weight_eta = weight_eta,
+           occ_eta = occ_eta, 
+           b = as.integer(occ_eta*nbin)) %>%
+  filter(!is.na(b)) %>%
+  group_by(b) %>% 
+  summarise( do = 1./nbin, n = sum(weight_eta), o = mean(occ_eta*weight_eta)/mean(weight_eta) ,  pobsm = mean(weight_eta)) %>% 
+  ungroup() %>%
+  mutate( p = n/sum(n)/do) -> expected_occ
+
+
+gamma_params %>% dplyr::select(OTU, occurrence) %>% 
+  distinct() %>% 
+  mutate( b = as.integer(occurrence*nbin)  ) %>% 
+  group_by(b) %>% 
+  summarise( do = 1./nbin, n = n(), o = mean(occurrence), o_sd = sd(occurrence)) %>% 
+  mutate( p = n/sum(n)/do ) %>% ungroup() -> occ_binned
+```
+
+
+
