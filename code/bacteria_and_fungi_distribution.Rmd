@@ -322,7 +322,7 @@ ggplot(cult_var_count_df)+
 
 ```
 
-3 cereal and legum composition are most represented. To simplify I keep those and add a 4th class containing all other composition
+3 cereal and legume composition are most represented. To simplify I keep those and add a 4th class containing all other composition
 
 ```{r}
 cult_var_df%>%

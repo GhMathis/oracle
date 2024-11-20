@@ -1,0 +1,556 @@
+---
+title: "RDA and CCA community"
+author: "Mathis Gheno"
+date: "2024-11-20"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+## ---- IMPORT PACKAGES ----
+library(readxl)
+library(tidyverse)
+library(GGally)
+library(corrplot)
+
+library(vegan)
+library(hilldiv)
+
+library(FactoMineR)
+library(factoextra)
+
+library(RColorBrewer)
+```
+
+```{r}
+## ---- usefull function ----
+main_theme = theme_minimal()+
+  theme(line = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        panel.border = element_blank(),
+        axis.ticks =  element_line(colour = "black"),
+        axis.text.x = element_text(colour = "black", size=22, face="italic", angle = 45, vjust = 1, hjust = 1),
+        axis.text.y = element_text(colour = "black", size=22, face="italic"),
+        legend.title = element_text(colour = "black", size=20,
+                                    hjust =0.5),
+
+        legend.text = element_text(colour = "black", size=18),
+        axis.title= element_text(size=28),
+        strip.text = element_text(colour = "black", size=15, face ="italic"))
+
+  
+replace_unknown_taxonomy <- function(taxonomy_vector) {
+ taxonomy_vector %>%
+    str_split(pattern = "\\|") %>%
+    map_chr(function(x) {
+      # Iterate over the taxonomy ranks and replace "unknown"
+      for (i in length(x):1) {
+        if (str_detect(x[i], "unknown")) {
+          # Find the nearest known taxonomic rank
+          known_rank <- x[max(which(!str_detect(x, "unknown")))]
+          known_name <- str_extract(known_rank, "[^__]+$")
+          known_initial <- substr(known_rank, 1, 1)
+          
+          # Replace "unknown" with "unknown_<known_rank>_<initial>"
+          x[i] <-  paste0("unknown__", known_name, "_", known_initial)
+        }
+      }
+      # Join the ranks back into a single string
+      str_c(x, collapse = "|")
+    })
+}
+
+
+
+# import data
+.%>%
+  read_tsv() %>%
+  #{{format column names}}
+  rename_with(~sub("\\_.*", "", .)) %>%
+  rename_with(~gsub("-", "_", .)) %>%
+  rename_with(~gsub("OR", "BU",.)) %>%
+  rename(CONT_BU_ext = BU_T_extr) %>%
+  rename(CONT_BU_PCR1 = T_1) %>%
+  rename(CONT_BU_PCR2 = T_2) %>% 
+  #{{select samples from ORACLE project}}
+  dplyr::select(OTU, taxonomy, starts_with("CONT", ignore.case = FALSE), 
+         starts_with("BU", ignore.case = FALSE)) %>%
+  #{{keep only resequenced samples when available}}
+  dplyr::select(-BU_SER_10, -BU_ST_10, -BU_YL_19, -BU_TS_3) %>%
+  #{{homogeneize resequenced sample names}}
+  rename(BU_SER_10 = BU_SER_10_S) %>%
+  rename(BU_ST_10 = BU_ST_10_S) %>%
+  rename(BU_YL_19 = BU_YL_19_S) %>%
+  rename(BU_TS_3 = BU_TS_3_S) %>%
+  rename_with(~sub("\\_1$", "_01", .)) %>%
+  rename_with(~sub("\\_2$", "_02", .)) %>%
+  rename_with(~sub("\\_3$", "_03", .)) %>%
+  rename_with(~sub("\\_4$", "_04", .)) %>%
+  rename_with(~sub("\\_5$", "_05", .)) %>%
+  rename_with(~sub("\\_6$", "_06", .)) %>%
+  rename_with(~sub("\\_7$", "_07", .)) %>%
+  rename_with(~sub("\\_8$", "_08", .)) %>%
+  rename_with(~sub("\\_9$", "_09", .)) %>%
+  #{{sequences with "No_hit" has to be deleted}}
+  filter(grepl("Bacteria|Archaea",taxonomy)) %>%
+  mutate(taxonomy = str_replace_all(taxonomy, "uncultured|\\*|Incertae_Sedis", "unknown"),
+         taxonomy = replace_unknown_taxonomy(taxonomy)
+         ) %>%
+  separate_wider_delim(taxonomy,names = taxonomic_levels, delim = "|", cols_remove  = F) %>%
+  #{{sequences affiliated to chloroplast and mitonchondria are excluded}}
+  filter(order != "Chloroplast", family != "Mitochondria")%>%
+  droplevels() -> rename.cols.and.arrange.taxonomy
+
+
+. %>%
+  replace(. == 0, NA) %>%
+  pivot_longer(starts_with("BU"), names_to = "samples", values_to = "reads") %>%
+  filter(!is.na(reads)) %>%
+  # merge control samples
+  mutate( n = rowSums(across(starts_with("CONT")), na.rm = T)
+          ) %>%
+  # substract abundance of control samples
+  mutate(reads = case_when(
+    is.na(n)  ~ reads,
+    n > reads ~ 0,
+    TRUE      ~ reads - n)
+    ) %>%
+  dplyr::select(-n,-starts_with("CONT")) %>%
+  pivot_wider(values_from = reads, names_from = samples, values_fill = 0) -> decontaminate
+```
+
+```{r}
+bact_data_path<- "data/Oracle_soils_16S_341F_785R_87_samples.OTU.filtered.cleaved.nosubstringOTUs.mumu.table2"
+taxonomic_levels <- c("kingdom", "phylum", "class", "order", "family", 
+                           "genus", "species")
+
+bact_data_path %>%
+  rename.cols.and.arrange.taxonomy %>%
+  decontaminate %>%
+  filter(!str_detect(species, "metagenome")
+         )-> bact_ASV
+
+bact_tax <- bact_ASV %>%
+   dplyr::select(OTU, all_of(taxonomic_levels))
+```
+
+# Arrange covariate
+
+## Load covariate
+```{r}
+read_tsv("data/metadata.txt") %>%
+  rename_with(~gsub(".", "_", ., fixed = TRUE)) -> metadata
+
+read_tsv("data/sample_coordinates.tsv") %>%
+  rename(soil_code = "samples") %>%
+  mutate(soil_code = str_replace(soil_code,"([A-Z]+)(\\d+)","BU_\\1_\\2")) -> coord
+coord%>%
+  ggplot()+
+  geom_point(aes(longitude,latitude,col = str_extract(soil_code, "(BU)_([A-Z]+)_(\\d+)", group = 2)))
+
+read_xlsx("data/Historique_Parcelles-Oracle.xlsx") %>%
+  dplyr::select(`N° Parcelle`, ...14, ...17,...20,) %>%
+  rename(soil_code = "N° Parcelle", cultu_2014 = "...14", cultu_2015 = "...17",cultu_2016 = "...20") %>%
+  mutate(soil_code = paste0("BU_",str_replace(soil_code, "([A-Z]+)(\\d+)", "\\1_\\2"))) -> preced_cultu
+
+read_xlsx("data/Soil_Parameters_oracle.xlsx") %>%
+  dplyr::select(`Var niébé 2017`, `Var Sorgho 2017`) %>%
+  rename(varnieb = "Var niébé 2017", varsorgh = "Var Sorgho 2017") -> variety
+
+metadata %>%
+  dplyr::select(pracul,modsem,FO_Qte ,denpoq, freqsar, NPK_qte, uree_qte) %>%
+  mutate(pracul = as.factor(pracul),
+                 modsem = as.factor(modsem)) -> agri_practice
+
+agri_practice %>%  
+  mutate(across(where(is.numeric),~decostand(.x,"standardize")[,1])) -> agri_practice_standa
+
+read_xlsx("data/Soil_Parameters_oracle.xlsx") %>%
+  dplyr::select(`C (g kg-1)`,`C/N`, `CEC (cmolc/kg)`, `Ca (cmol/kg)`,`Mg (cmolc/kg)`, `K(cmolc/kg)`, `SBE (cmolc/kg)`,           
+    `TS (%)`, Site...3, `N° site...4`) %>%
+  rename(Site = "Site...3",N_site = "N° site...4", C = "C (g kg-1)",CN = "C/N", CEC = "CEC (cmolc/kg)", Ca = "Ca (cmol/kg)",Mg = "Mg (cmolc/kg)",K = "K(cmolc/kg)",SBE = "SBE (cmolc/kg)",           
+         ,TS = "TS (%)" ) %>%
+  mutate( N_site = str_replace(as.character(N_site), "^[1-9]$", "0\\0"),
+          soil_code = str_c(Site,N_site)) %>%
+  mutate(soil_code = str_c("BU_",Site,"_",N_site)) %>%
+  left_join(metadata%>%
+              dplyr::select(pHeau, Pto, Kto, Nto, MO, Argil, limon, sable, soil_code),
+            by = "soil_code") %>%
+  select(-c(N_site,Site))-> soil
+
+str(soil)
+```
+
+## Cultural History
+
+```{r echo = T, results = 'hide'}
+preced_cultu %>% 
+  mutate(all_year = pmap_chr(
+    list(cultu_2014, cultu_2015, cultu_2016),
+    ~ paste(sort(c(...)), collapse = " ")
+  )) %>%
+  pull(all_year) %>%
+  tab.disjonctif -> all_year_cult
+
+colnames(all_year_cult)
+all_year_cult %>%
+  plotMyMatrix(dimLabels = c("all_cult_year", "soil_code"), plotOptions = list(rowNames = T,colNames = F))
+
+estimateBipartiteSBM(all_year_cult) -> sbm_test_preced_cultu
+plot(sbm_test_preced_cultu)
+preced_cultu%>%
+  filter(!(is.na(cultu_2014) | is.na(cultu_2015) | is.na(cultu_2016))) -> preced_cultu
+preced_cultu%>%
+  mutate(across(starts_with("cultu"), ~case_when(
+    .x == "Ass_Ses+N" ~ "c+l", # c : cereal ; l = legumes
+    .x == "Ass_M+N" ~ "c+l",
+    .x == "Ass_S+N" ~ "c+l",
+    .x == "Ass_S+M+N" ~ "c+l",
+    .x == "Rot_Avec_Leg" ~ "l",
+    .x == "Rot_Sans_Leg" ~ "c",
+    .x == "Jachère" ~ "jachere"
+  ))) -> preced_cultu_cere_legu
+
+### disjonctif table usable by sbm
+tab.disjonctif(preced_cultu_cere_legu$cultu_2014) -> cult2014_bis
+tab.disjonctif(preced_cultu_cere_legu$cultu_2015) -> cult2015_bis
+tab.disjonctif(preced_cultu_cere_legu$cultu_2016) -> cult2016_bis
+
+### check if colnames concord with eachother
+colnames(cult2014_bis)
+colnames(cult2015_bis)
+colnames(cult2016_bis)
+
+cult2014_bis = cbind(cult2014_bis,jachere = 0)
+
+cult2014_bis%>%
+  t()%>%
+  plotMyMatrix(dimLabels = c("cult2014", "soil_code"), plotOptions = list(rowNames = T,colNames = F))
+cult2015_bis%>%
+  t()%>%
+  plotMyMatrix(dimLabels = c("cult2014", "soil_code"), plotOptions = list(rowNames = T,colNames = F))
+cult2016_bis%>%
+  t()%>%
+  plotMyMatrix(dimLabels = c("cult2014", "soil_code"), plotOptions = list(rowNames = T,colNames = F))
+
+### create networks objects
+net2014_bis <- defineSBM(cult2014_bis, model = "bernoulli", dimLabels = c(col = "cult_history", row = "cult_type"))# row and col inverted, bug ? 
+net2015_bis <- defineSBM(cult2015_bis, model = "bernoulli", dimLabels = c(col = "cult_history", row = "cult_type"))
+net2016_bis <- defineSBM(cult2016_bis, model = "bernoulli", dimLabels = c(col = "cult_history", row = "cult_type"))
+
+### compute smb
+set.seed(2)
+estimateMultiplexSBM(list(net2014_bis, net2015_bis, net2016_bis), dependent = FALSE) -> sbm_preced_cult_bis
+plot(sbm_preced_cult_bis)
+```
+
+## Variety
+
+```{r}
+variety%>%
+  mutate(varnieb = case_when(varnieb == "beng-raaga" ~"Beng-raaga",
+                   varnieb == "Beng-yaanga spécial" ~"Beng-yaanga",
+                   varnieb == "beng-yaanga" ~"Beng-yaanga",
+                   varnieb == "beng raaga(beng zaalé)" ~"Beng-raaga",
+                   varnieb == "Beng raaga" ~"Beng-raaga",
+                  .default = as.character(varnieb)),
+         varsorgh = case_when(varsorgh == "Mélange(Pissopoé + Mitindaadé)" ~"Mélange(Pissopoé + Mitindaadé)",
+                   varsorgh == "rouko" ~"Rouko",
+                  .default = as.character(varsorgh))) -> variety
+
+tab.disjonctif(variety$varnieb) -> varnieb
+
+varnieb%>%
+  as.data.frame()%>%
+  mutate(`Beng-raaga` = `Beng-raaga` + `Mélange (beng-raaga+Beng-yaanga)`,
+         `Beng-yaanga` = `Beng-yaanga` + `Mélange (beng-raaga+Beng-yaanga)`) %>%
+  dplyr::select(!(starts_with("Mélange") ))%>%
+  as.matrix() -> varnieb
+
+tab.disjonctif(variety$varsorgh) -> varsorgh
+
+varsorgh%>%
+  as.data.frame()%>%
+  mutate(`ICSV-1049` = `ICSV-1049` + `Mélange (ICSV-1049+Mitindaadé)`,
+         `Mitindaadé` = `Mitindaadé` + `Mélange (ICSV-1049+Mitindaadé)`,
+         Rouko = Rouko + `Mélange (Mitindaadé+rouko)`,
+         `Mitindaadé` = `Mitindaadé` + `Mélange (Mitindaadé+rouko)`,
+         Pisnou = Pisnou + `Mélange (Pisnou+Kazinga)`,
+         Kazinga = `Mélange (Pisnou+Kazinga)`,
+         `Mitindaadé` = `Mitindaadé` + `Mélange (Pissopoé + Mitindaadé)`,
+         `Pissopoé` = `Pissopoé` + `Mélange (Pissopoé + Mitindaadé)`,
+                  `Mitindaadé` = `Mitindaadé` + `Mélange(Pissopoé + Mitindaadé)`,
+         `Pissopoé` = `Pissopoé` + `Mélange(Pissopoé + Mitindaadé)`,
+         `Zoé-wongo` =  `Mélange (Zoé-wongo+Kourbouli)`,
+         Kourbouli =  Kourbouli + `Mélange (Zoé-wongo+Kourbouli)`,
+        `Zoé-wongo` = `Zoé-wongo` + `Zoé-wongo+rouko`,
+         Rouko = Rouko + `Zoé-wongo+rouko`)%>%
+        dplyr::select(!(starts_with("Mélange")  | "Zoé-wongo+rouko"))%>%
+  as.matrix() -> varsorgh
+
+cbind(varnieb, varsorgh)%>%
+  data.frame()%>%
+  mutate(across(everything(), ~case_when(. == 1 ~  cur_column(),
+                                          . == 0 ~ NA)))%>%
+  tidyr::unite("cult_var", na.rm = T) -> cult_var_df
+  
+cult_var_df%>%
+  group_by(cult_var)%>%
+  summarise(n= n())-> cult_var_count_df
+
+ggplot(cult_var_count_df)+
+  geom_point(aes(cult_var, n), cex = 3)+
+  main_theme+
+  theme(axis.text.x = element_text(colour = "black", size=12, face="italic", angle = 45, vjust = 1, hjust = 1))
+
+```
+
+3 cereal and legume composition are most represented. To simplify I keep those and add a 4th class containing all other composition
+
+```{r}
+cult_var_df%>%
+  left_join(cult_var_count_df, by = "cult_var")%>%
+  # but culture variety type in other when they appear less than 5 time in the 80 samples
+  mutate(cult_var = case_when(n<5 ~ "others",
+                              cult_var == "Beng.raaga_Mitindaadé_Pissopoé" ~ "Beng.raaga_Pissopoé",
+                              cult_var == "Beng.raaga_Balinpèlga" ~ "others",
+                               .default = cult_var),
+          soil_code = soil$soil_code)%>%
+  dplyr::select(-n) -> cult_var_df
+
+cult_var_df%>%
+  group_by(cult_var)%>%
+  summarise(n= n())%>%
+  ggplot()+
+  geom_point(aes(cult_var, n), cex = 3)+
+  scale_y_continuous(limits = c(0,30))+
+  main_theme+
+  theme(axis.text.x = element_text(colour = "black", size=12, face="italic", angle = 45, vjust = 1, hjust = 1))
+```
+
+```{r}
+data.frame(clust_cult_history = sbm_preced_cult_bis$memberships$cult_history, 
+                         soil_code = preced_cultu$soil_code) %>%
+   # variety
+  left_join( cult_var_df, by = "soil_code") %>%
+  left_join( soil, by = "soil_code") %>%
+  left_join(coord,  by = "soil_code") %>%
+  mutate(locality = factor((str_extract(soil_code,"((?<=^.{3})[A-Z]+)")))) -> final_covariate_df
+
+final_covariate_df$clust_cult_history <- factor(final_covariate_df$clust_cult_history, labels = c( "Cereales +\n legumes only", "mixte"))
+final_covariate_df
+```
+
+## Soil
+
+```{r echo = T}
+
+zscore_normalization <- function(data) {
+  # Step 1: Rank the data
+  ranked_data <- rank(data)
+  n <- length(data)
+  
+  # Step 2: Calculate quantile positions
+  quantile_positions <- (ranked_data) / (n + 1)
+  
+  # Step 3: Transform quantiles to z-scores
+  mean_std_normal <- qnorm(quantile_positions)
+  
+  return(mean_std_normal)
+}
+
+make_id_order_by_group_df <- function(.data, group_name){
+.data%>%as.data.frame()%>%
+  rownames_to_column("id")%>%
+  mutate(id = as.numeric(id))%>%
+  arrange({{group_name}})
+} 
+ 
+soil%>%
+
+  dplyr::select(-c(soil_code))%>% # , Argil, limon, sable 
+  mutate_all(~zscore_normalization(.))%>%
+  as.matrix()-> soil_standard_rank
+
+set.seed(2)
+smb_soil <- estimateBipartiteSBM(soil_standard_rank , model = "gaussian", estimOptions = list(plot = FALSE))
+
+var_soil_id = make_id_order_by_group_df(smb_soil$memberships[2], col)
+soil_id =  make_id_order_by_group_df(smb_soil$memberships[1], row)
+
+soil_standard_rank[soil2_id$id,var_soil_id$id]%>%
+  as.matrix()%>%
+  plotMyMatrix(dimLabels =  c("soil_code", "Soil var"), plotOptions = list(rowNames = T,colNames = T))+
+  theme(
+    legend.position="none",
+    axis.text.x =element_text(angle = 45, vjust = 1, hjust = 1, size = 6, face="italic"),
+    axis.text.y = element_text(size = 5,face="italic"))+
+  geom_vline(xintercept = which(!duplicated(var_soil_id$col))[-1]-0.5, col ="red")+
+  geom_hline(yintercept = abs(which(!duplicated(soil2_id$row))[-1]-nrow(soil_id)-1)+0.5, col = "red", linetype = 5)+
+  theme(strip.text.x = element_text(colour = "gray", size=15, face ="italic"),
+        strip.text.y  = element_text(colour = "gray", size=15, face ="italic"),
+        strip.background = element_rect(fill="white"),
+        panel.border = element_rect(color = "black",  fill = NA))
+```
+
+
+## Colinearity
+
+```{r}
+final_covariate_df %>%
+  select(where(is.numeric)) %>%
+  ggpairs()
+final_covariate_df %>%
+  select(MO, sable, CEC, pHeau) %>%
+  mutate(across(where(is.numeric), ~decostand(., method = "standardize"))) %>% 
+  as.matrix() %>%
+  as.data.frame() %>%
+  ggpairs()
+
+final_covariate_df %>%
+  select(MO, sable, CEC, pHeau, locality, longitude, latitude, clust_cult_history, soil_code, cult_var) %>%
+  mutate(across(where(is.numeric), ~decostand(., method = "standardize"))) -> select_covariate_df
+```
+
+
+## Rarefaction
+
+```{r}
+rarefaction.func <- function(df,rar_sample, n_rare = 100){
+   df %>%
+    dplyr::select(starts_with("BU")) %>%
+    dim -> D
+   # {{rarefaction}}
+  df_rarefy = matrix(0, nrow =  D[1], ncol = D[2])
+  for(n in 1:n_rare){
+  df %>%
+    dplyr::select(starts_with("BU")) %>%
+    t() %>%
+    vegan::rrarefy(rar_sample) %>%
+    t() + df_rarefy -> df_rarefy
+    
+  }
+  round(df_rarefy/n_rare) -> df_rarefy
+  df_rarefy %>%
+    bind_cols(
+      df %>%
+        dplyr::select(!starts_with("BU"))
+    ) -> df_rarefy
+  return(df_rarefy)
+}
+```
+
+```{r}
+set.seed(182631)
+bact_ASV %>%
+  dplyr::select(starts_with("BU")) %>%
+  colSums %>%
+  min -> min_sample
+colnames(bact_ASV)
+bact_ASV %>%
+  rarefaction.func(min_sample) -> bact_ASV_rare
+
+```
+
+## Filter under-represented species
+
+```{r}
+bact_ASV_rare %>% 
+  filter(rowSums(across(starts_with("BU")) != 0) > 3 & # occur more than 3 times across sample
+         rowSums(across(starts_with("BU"))) > 10 # reads count > 10 across sample
+         ) %>%
+  column_to_rownames("OTU")-> bact_ASV_rare_filtred
+```
+
+## Standardize with hellinger
+
+```{r}
+bact_ASV_rare_filtred %>%
+  rownames_to_column("OTU") %>%
+  select(starts_with("BU")) %>%
+  t() %>%
+  decostand(method = "hellinger") -> bact_ASV_rare_filtred_stantdard 
+```
+
+# CCA
+
+```{r}
+cca_full = cca(bact_ASV_rare_filtred_stantdard ~  MO + sable + CEC + pHeau + clust_cult_history + cult_var,
+               select_covariate_df )
+
+p_var_full = summary(cca_full)
+RsquareAdj(cca_full)$adj.r.squared
+RsquareAdj(cca_full)$r.squared
+round(vif.cca(cca_full),2)
+
+cca_partial_full = cca(bact_ASV_rare_filtred_stantdard ~ MO + sable + CEC + pHeau + clust_cult_history + cult_var +
+                 Condition(locality), select_covariate_df)
+
+p_var_full = summary(cca_partial_full)
+RsquareAdj(cca_partial_full)$adj.r.squared
+RsquareAdj(cca_partial_full)$r.squared
+round(vif.cca(cca_partial_full),2)
+
+
+cca_ordistep <- ordiR2step(cca(bact_ASV_rare_filtred_stantdard ~ 1, select_covariate_df),
+                           scope = formula(cca_full),
+                           direction = "forward",
+                           R2scope = T,
+                           pstep = 1000,
+                           trace = FALSE)
+
+ordiplot(cca_ordistep,scaling = 1)
+
+cca_ordistep_partial <- ordiR2step(cca(bact_ASV_rare_filtred_stantdard ~ 1+
+                 Condition(locality), select_covariate_df),
+                           scope = formula(cca_partial_full),
+                           direction = "forward",
+                           R2scope = T,
+                           pstep = 100,
+                           trace = FALSE)
+ ordiplot(cca_ordistep_partial,scaling = 1)
+
+                           
+```
+
+```{r}
+library(ggrepel)
+##### extract axis for graph
+pl_CCA <- ordiplot(cca_ordistep,scaling = 1)# Type 1 scaling
+perc <- round(100*(summary(cca_ordistep)$cont$importance[2, 1:3]), 2)
+
+## Continuous variables
+env_var_CCA = as.data.frame(pl_CCA$biplot*attr(pl_CCA$biplot,"arrow.mul"))
+env_var_CCA$type = rownames(env_var_CCA )
+
+## Discret variables
+env_var_discret_CCA = as.data.frame(pl_CCA$centroids)
+env_var_discret_CCA$type = rownames(env_var_discret_CCA)
+
+## Sites
+site_CCA = as.data.frame(pl_CCA$site)
+site_CCA$type = rownames(site_CCA)
+
+## Species
+species_CCA = as.data.frame(pl_CCA$species)
+
+ggplot()+
+  geom_segment(data = env_var_CCA ,aes(x=CCA1,y = CCA2, xend =0, yend = 0), arrow = arrow(length=unit(0.20,"cm"), ends="first", type = "open"), size = 1.5, col = "gray3")+
+  geom_label_repel(data = env_var_CCA ,aes(x=CCA1,y = CCA2,label = type),  cex = 5, alpha = 0.75)+
+  geom_point(data = site_CCA, aes(x=CCA1,y = CCA2), size = 2, stroke=1.2, shape =4, col = "lightblue")+
+  
+  #geom_point(data = cluster_sp_df_CCA, aes(x=CCA1,y = CCA2, col = clust_CCA_plant), size = 2, stroke=1.2, shape =4)+
+  #geom_label_repel(data = cluster_sp_df_CCA,aes(x=CCA1,y = CCA2, col = clust_CCA_plant, label = Plant_species), cex = 2,alpha = 0.80)+
+  #geom_point(data = cluster_site_df_CCA, aes(x=CCA1,y = CCA2, shape = clust_CCA_plant ), cex = 2.4, col = "black")+
+  #geom_point(data = cluster_site_df_CCA, aes(x=CCA1,y = CCA2, size = Richess, fill =Richess),shape =21 )+
+ # geom_point(data =metadata_quadra2,  aes(x=CCA1,y = CCA2, col = clust_smb_quad_plant , fill =Richess))+
+  geom_segment(data = env_var_discret_CCA, aes(x=CCA1,y = CCA2, xend =0, yend = 0), arrow = arrow(length=unit(0.20,"cm"), ends="first", type = "open"), size = 1, col = "gray3")+
+  geom_label_repel(data = env_var_discret_CCA,aes(x=CCA1,y = CCA2,label = type),  cex = 5, alpha = 0.75)+
+  labs(x = paste0("CCA1 (", perc[1], "%)"), y = paste0("CCA2 (", perc[2], "%)"), col = "Cluster species", shape = "Cluster sites")+
+  #scale_fill_gradientn(colours = viridis(256, option = "D"))+
+  main_theme+
+  theme(line = element_line())
+
+```
+

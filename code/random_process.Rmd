@@ -6,6 +6,7 @@ output: html_document
 editor_options: 
   chunk_output_type: inline
 ---
+
 ## Import packages
 
 ```{r}
@@ -16,6 +17,7 @@ library(purrr)
 library(hilldiv)
 library(pracma)
 ```
+
 ## usefull function
 
 ```{r}
@@ -141,7 +143,7 @@ bact_data_path %>%
   decontaminate %>%
   filter(!str_detect(species, "metagenome")
          )-> bact_ASV
-
+write.table(bact_ASV, "outputs/bact_ASV_clean_data.txt")
 bact_tax <- bact_ASV %>%
    dplyr::select(OTU, all_of(taxonomic_levels))
 ```
@@ -162,25 +164,28 @@ calculate_variance_abundance <- function(nsi = nsi, Ns =Ns) {
 
 ```
 
+Compute $\bar x_i; \sigma_{x_i}^2; \beta_i;\langle o_i\rangle$
+
 ```{r}
 bact_ASV %>% 
   filter(rowSums(across(starts_with("BU")) != 0) >= 1 & # occur more than 3 times across sample
          rowSums(across(starts_with("BU"))) > 10 # reads count > 10 across sample
          ) -> bact_ASV_filter
+nrow(bact_ASV_filter)
 
 bact_ASV_filter %>%
   select(OTU, starts_with("BU")) %>%
-  pivot_longer(-c(OTU), names_to = "soil_code", values_to = "nsi", values_drop_na = T) %>%
+  pivot_longer(-c(OTU), names_to = "soil_code", values_to = "nsi", values_drop_na = T) %>% 
   group_by(soil_code) %>%
   mutate(Ns = sum(nsi)) %>%
   ungroup() %>%
   group_by(OTU) %>%
-  summarise(mean_abundance =   mean(nsi / Ns),
+  summarise(mean_abundance = mean(nsi / Ns),
           variance_abundance = calculate_variance_abundance(nsi, Ns),
           shape = mean_abundance^2/variance_abundance, # Beta in the paper (but alpha in the Wikipedia and dgamm formula a)
           scale =  mean_abundance/variance_abundance,# not in the paper (but beta in the Wikipedia and dgamm formula)
-          occurrence = sum(nsi != 0)/80,
-          occurrence_expected = 1- mean(1+((mean_abundance*Ns)/shape))^(-shape)
+          occupancy = sum(nsi != 0)/80,
+          occupancy_expected = 1- mean(1+((mean_abundance*Ns)/shape))^(-shape)
           ) -> gamma_params
 gamma_params
 
@@ -197,39 +202,38 @@ gamma_params %>%
 
 ```
 
-
-
-True occurrence compare with expected occurrence. Expected occurrence is only compute from mean and variance of species relative abundances across samples.
+True occupancy compare with expected occupancy. Expected occupancy is only compute from mean and variance of species relative abundances across samples.
 
 ```{r}
 nbin = 10
 
 gamma_params %>%
-  mutate(df = (max(occurrence)-min(occurrence))/nbin,
-         b = as.integer( (occurrence - min(occurrence) )/df)) %>%
+  mutate(df = (max(occupancy)-min(occupancy))/nbin,
+         b = as.integer( (occupancy - min(occupancy) )/df)) %>%
   group_by(b) %>%
-  mutate(mean_occurence = mean(occurrence),
-         mean_occurence_exp = mean(occurrence_expected)) %>%
+  mutate(mean_occurence = mean(occupancy),
+         mean_occurence_exp = mean(occupancy_expected)) %>%
   ggplot() +
-  geom_point(aes(occurrence,occurrence_expected ), alpha =0.5) +
+  geom_point(aes(occupancy,occupancy_expected ), alpha =0.5) +
  
-  geom_smooth(aes(occurrence,occurrence_expected ),method = "lm")+
+  geom_smooth(aes(occupancy,occupancy_expected ),method = "lm")+
 
   geom_abline(intercept = 0, slope = 1, col = "red", linetype = 2, linewidth = 2)+
   geom_point(aes(mean_occurence,mean_occurence_exp ), fill = "purple", size =4, shape = 23) +
   labs(x = "occupency (per OTU)", y = "expected occupency (per OTU)")+
   main_theme
-summary(lm(occurrence~occurrence_expected, gamma_params))
+summary(lm(occupancy~occupancy_expected, gamma_params))
 
 ```
-Expected occurrence seems to over estimate a little bit true occurrence 
+
+Expected occupancy seems to over estimate a little bit true occupancy
 
 ```{r}
 gamma_params
 ```
 
-
 Now i setup function to estimate mu and sigma to estimate averages species relative abundance
+
 ```{r}
 fun_erf <- function( mu, c, m1, m2  ){
   sigma <- sqrt(-c*m1 + m2 + c*mu - m1*mu )
@@ -273,6 +277,7 @@ gamma_params %>%
 
 estim_mean
 ```
+Compute $\langle o \rangle_\eta = 1 - \frac{1}{T} \sum_{s=1}^T P(0 \mid N_s, \eta) = 1 - \frac{1}{T} \sum_{s=1}^T \left(\frac{\beta}{\beta + e^{\eta N_s}}\right)^\beta$
 
 ```{r}
 nbin = 20
@@ -286,6 +291,11 @@ predict_occupancys <- function(N, eta ){
 }
 
 occupancys <- outer(nreads, etas, FUN=predict_occupancys)
+
+```
+occupancys contain the probability of occurrence of all expected species (not only one that are observed but also those missing $\rightarrow S_{tot}$)
+
+```{r}
 weight_eta <- 1 - exp( colSums(log(1 - occupancys )))
 occ_eta <- colMeans(occupancys)
 data.frame(weight_eta = weight_eta,
@@ -297,36 +307,15 @@ data.frame(weight_eta = weight_eta,
   ungroup() %>%
   mutate( p = n/sum(n)/do) -> expected_occ
 
-# bact_ASV_filter %>%
-#   select(OTU, starts_with("BU")) %>%
-#   pivot_longer(-c(OTU), names_to = "soil_code", values_to = "nsi", values_drop_na = T) %>%
-#   group_by(soil_code) %>%
-#   mutate(Ns = sum(nsi)) %>%
-#   ungroup() %>%
-#   group_by(OTU) %>%
-#   mutate(mean_abundance = calculate_mean_abundance(nsi, Ns),
-#          variance_abundance = calculate_variance_abundance(nsi, Ns),
-#          etas =  rnorm(1,mean = estim_mean$mu, sd = estim_mean$sigma),
-#          beta = (mean_abundance / sqrt(variance_abundance))^2,
-#          occupency = 1 - (beta/(beta + Ns*exp(etas)))^beta) %>%
-#   group_by(OTU) %>%
-#   summarise(weight_eta = 1.-exp( sum(log(1.- occupency ))),
-#             occ_eta = mean(occupency)) %>%
-#   mutate(b = as.integer(occ_eta*nbin)) %>% 
-#   filter(!is.na(b)) %>%
-#   group_by(b) %>% 
-#   summarise( do = 1./nbin, n = sum(weight_eta), o = mean(occ_eta*weight_eta)/mean(weight_eta) ,  pobsm = mean(weight_eta)) %>% 
-#   ungroup() %>%
-#   mutate( p = n/sum(n)/do ) -> expected_occ
-
-gamma_params %>% dplyr::select(OTU, occurrence) %>% 
+gamma_params %>% dplyr::select(OTU, occupancy) %>% 
   distinct() %>% 
-  mutate( b = as.integer(occurrence*nbin)  ) %>% 
+  mutate( b = as.integer(occupancy*nbin)  ) %>% 
   group_by(b) %>% 
-  summarise( do = 1./nbin, n = n(), o = mean(occurrence), o_sd = sd(occurrence)) %>% 
+  summarise( do = 1./nbin, n = n(), o = mean(occupancy), o_sd = sd(occupancy)) %>% 
   mutate( p = n/sum(n)/do ) %>% ungroup() -> occ_binned
 ```
 
+$$  $$
 
 ```{r}
 ggplot() +
@@ -338,20 +327,19 @@ ggplot() +
   main_theme
 ###
 ```
+
 ```{r}
 gamma_params %>%
   ggplot() +
-    geom_point( aes(x = mean_abundance, y = occurrence),fill = "gray", shape = 21, size = 2, alpha =0.05) +
-    geom_smooth( aes(x = mean_abundance, y = occurrence), se = F, col = "black") +
-    geom_smooth(aes(x = mean_abundance, y = occurrence_expected), col = "black", se = F, linetype = 2) +
+    geom_point( aes(x = mean_abundance, y = occupancy),fill = "gray", shape = 21, size = 2, alpha =0.05) +
+    geom_smooth( aes(x = mean_abundance, y = occupancy), se = F, col = "black") +
+    geom_smooth(aes(x = mean_abundance, y = occupancy_expected), col = "black", se = F, linetype = 2) +
     scale_y_log10( "Occupancy"  ) +
     scale_x_log10( "Average relative abundance (log)") +
     main_theme
 ```
 
 ```{r}
-
-
 bact_ASV %>% 
   select(OTU, starts_with("BU")) %>%
   pivot_longer(-c(OTU), names_to = "soil_code", values_to = "nsi", values_drop_na = T) %>%
@@ -367,43 +355,73 @@ bact_ASV %>%
   geom_density(aes(log_mean_abundance_rescale, group = OTU), col = "gray") +
   geom_density(aes(log_mean_abundance_rescale), linewidth = 1.5) +
   main_theme
+gamma_params
+nbin <- 20
 
+
+bact_ASV %>% 
+  select(OTU, starts_with("BU")) %>%
+  pivot_longer(-c(OTU), names_to = "soil_code", values_to = "nsi", values_drop_na = T) %>%
+  group_by(soil_code) %>%
+  mutate(Ns = sum(nsi)) %>%
+  ungroup() %>%
+  group_by(OTU) %>%
+  filter(sum(nsi != 0) == 80 ) %>%
+  mutate(log_relative_abundance = log(nsi/Ns),
+          log_relative_abundance_rescale = (log_relative_abundance - mean(log_relative_abundance))/sd(log_relative_abundance))%>%
+  ungroup() %>%
+  mutate(df = (max(log_relative_abundance_rescale)-min(log_relative_abundance_rescale))/nbin, # log mean abundance class step diff
+         b = as.integer( (log_relative_abundance_rescale - min(log_relative_abundance_rescale))/df )) %>% #  log mean abundance class
+  group_by(b) %>% 
+  summarise(log_relative_abundance_rescale_mean = mean(log_relative_abundance_rescale, na.rm = T), n = n(), df =  unique(df)) %>% 
+  ungroup() %>%
+  mutate(p = n / sum(n) / df) %>%
+  ggplot() +
+  geom_point(aes(log_relative_abundance_rescale_mean/sqrt(2),
+                 p), col = "gray", cex = 3) +
+  stat_function( fun = dgamma,
+                 color = "black", size = 1, args = list( shape = 1.7, log = T))+
+  #scale_y_log10( "Probability density", limits = c(0.001,0.8))  +
+  main_theme
+ 
 ```
 
 ```{r}
 nbin <- 20
-gamma_params$mean_abundance %>% max
+
 
 statp <-  gamma_params %>% 
   mutate( log_mean_abundance = log(mean_abundance) , cutoff = -100 ,
           df = (max(log_mean_abundance)-min(log_mean_abundance))/nbin, # log mean abundance class step diff
           b = as.integer( (log_mean_abundance - min(log_mean_abundance) )/df )) %>% #  log mean abundance class
   group_by(b) %>% 
-  summarise(log_mean_abundance = mean(log_mean_abundance), cutoff = unique(cutoff), n = n(), df =  unique(df)  ) %>% 
+  summarise(log_mean_abundance = mean(log_mean_abundance, na.rm = T), cutoff = unique(cutoff), n = n(), df =  unique(df)) %>% 
   ungroup() %>%
   mutate( p = n / sum(n) / df ) 
 
-simple_par  <- function(x) {- x^2}  
+
+statp$log_mean_abundance %>% mean
 
 statp %>% 
+  bind_cols(estim_mean) %>% filter(log_mean_abundance > c+0.15, n > 10) %>%
   filter(log_mean_abundance > cutoff) %>% 
-  bind_cols(estim_mean) %>% 
+ 
 
   ggplot() + 
-  stat_function( fun = simple_par, color = "black", size = 1 )+
+  stat_function( fun = dlnorm, args = list(mean = statp$log_mean_abundance %>% mean,
+                                           sd = statp$log_mean_abundance %>% sd),
+                 color = "black", size = 1 )+
   geom_point( aes(
     x = (log_mean_abundance-mu)/sqrt(2*sigma^2)  ,
     y = 10^( log(p) - log( 0.5 * erfc( (mu-c)/sqrt(2)/sigma ) ) + 0.5*log(2.*pi) ),
   ), size = 3 , stroke = 1) +
   geom_vline(aes( xintercept = (c-mu)/sqrt(2*sigma^2)  )  ) +
   geom_vline(aes( xintercept = 0  )) +
-  scale_x_continuous( "Rescaled log average abundance" ) +
-  scale_y_log10( "Probability density")  +
+  scale_x_continuous( "Rescaled log average\n relative abundance", limits = c(-2.5,2.5) ) +
+  #scale_y_log10( "Probability density")  +
   main_theme
 
 ```
-
-
 
 ## Test with evironnemental condition
 
@@ -447,6 +465,7 @@ smb_soil <- estimateBipartiteSBM(soil_standard_rank, model = "gaussian", estimOp
 data.frame(clust_soil = smb_soil$memberships$row,
                          soil_code = soil$soil_code) -> cluster_df
 ```
+
 ```{r}
 bact_ASV_filter %>%
   select(OTU, starts_with("BU")) %>%
@@ -460,8 +479,8 @@ bact_ASV_filter %>%
           variance_abundance = calculate_variance_abundance(nsi, Ns),
           shape = mean_abundance^2/variance_abundance, # Beta in the paper (but alpha in the Wikipedia and dgamm formula a)
           scale =  mean_abundance/variance_abundance,# not in the paper (but beta in the Wikipedia and dgamm formula)
-          occurrence = sum(nsi != 0)/80,
-          occurrence_expected = 1- mean(1+((mean_abundance*Ns)/shape))^(-shape)
+          occupancy = sum(nsi != 0)/80,
+          occupancy_expected = 1- mean(1+((mean_abundance*Ns)/shape))^(-shape)
           ) -> gamma_params
 gamma_params
 
@@ -476,6 +495,7 @@ gamma_params %>%
   labs(x = "Mean Abundance", y = " Abundance Variance", title = "slope(red) = 1:2 ") +
   main_theme
 ```
+
 ```{r}
 nreads = bact_ASV_filter %>%
   select(starts_with("BU")) %>% 
@@ -502,6 +522,7 @@ gamma_params %>%
   mutate(x = (c-mu)/sqrt(2*sigma^2),
     stot = 2*ns_obs / erfc(x)) -> estim_mean
 ```
+
 ```{r}
 nbin <- 20
 
@@ -521,13 +542,10 @@ data.frame(weight_eta = weight_eta,
   mutate( p = n/sum(n)/do) -> expected_occ
 
 
-gamma_params %>% dplyr::select(OTU, occurrence) %>% 
+gamma_params %>% dplyr::select(OTU, occupancy) %>% 
   distinct() %>% 
-  mutate( b = as.integer(occurrence*nbin)  ) %>% 
+  mutate( b = as.integer(occupancy*nbin)  ) %>% 
   group_by(b) %>% 
-  summarise( do = 1./nbin, n = n(), o = mean(occurrence), o_sd = sd(occurrence)) %>% 
+  summarise( do = 1./nbin, n = n(), o = mean(occupancy), o_sd = sd(occupancy)) %>% 
   mutate( p = n/sum(n)/do ) %>% ungroup() -> occ_binned
 ```
-
-
-
